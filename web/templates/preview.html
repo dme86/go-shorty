@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ if .L.Title.Valid }}{{ .L.Title.String }} — Shorty Preview{{ else }}Shorty Preview{{ end }}</title>
+
+  {{ if .L.Title.Valid }}<meta property="og:title" content="{{ .L.Title.String }}">{{ end }}
+  {{ if .L.Description.Valid }}<meta property="og:description" content="{{ .L.Description.String }}">{{ end }}
+  {{ if .L.ImageURL.Valid }}<meta property="og:image" content="{{ .L.ImageURL.String }}">{{ end }}
+  {{ if .L.SiteName.Valid }}<meta property="og:site_name" content="{{ .L.SiteName.String }}">{{ end }}
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ .BaseURL }}/{{ .L.Code }}">
+
+  <script defer src="/static/app.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style> .clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; } </style>
+</head>
+<body class="bg-gray-50 text-gray-900" data-created="{{ .L.CreatedAt.Format "2006-01-02T15:04:05Z07:00" }}">
+
+  <!-- Top Home-Bar (wird im iframe automatisch versteckt) -->
+  <div id="homebar" class="bg-white/80 backdrop-blur sticky top-0 z-40 border-b">
+    <div class="max-w-2xl mx-auto px-4 py-2 flex items-center justify-between">
+      <a href="{{ .BaseURL }}/" target="_top" class="inline-flex items-center gap-2 text-sm text-gray-700 hover:text-indigo-700">
+        <span aria-hidden="true">←</span>
+        <span>Home</span>
+      </a>
+      <span class="text-xs text-gray-400">Preview</span>
+    </div>
+  </div>
+
+  <div class="max-w-2xl mx-auto p-6">
+    <div class="bg-white shadow rounded-2xl p-5">
+      <div class="text-sm text-gray-500 mb-2">Preview for <span class="font-mono">/{{ .L.Code }}</span></div>
+      <a href="{{ .BaseURL }}/{{ .L.Code }}" class="block text-2xl font-semibold text-indigo-700 hover:underline break-words">{{ .L.LongURL }}</a>
+      {{ if .L.Title.Valid }}<div class="mt-3 text-lg font-medium">{{ .L.Title.String }}</div>{{ end }}
+      {{ if .L.Description.Valid }}<p class="mt-1 text-gray-600 clamp-2">{{ .L.Description.String }}</p>{{ end }}
+      {{ if .L.ImageURL.Valid }}<img src="{{ .L.ImageURL.String }}" alt="" class="mt-4 rounded-xl max-h-64 object-cover w-full">{{ end }}
+
+      {{ if .L.Tags }}
+        <div class="mt-3 flex flex-wrap gap-2">
+          {{ range .L.Tags }}
+            <span class="px-2 py-0.5 bg-gray-100 rounded-full text-xs">{{ . }}</span>
+          {{ end }}
+        </div>
+      {{ end }}
+
+      <div class="mt-4 flex flex-wrap gap-3 items-center text-sm text-gray-600">
+        <span>Clicks: {{ .L.ClickCount }}</span>
+
+        <!-- Age -->
+        <span class="px-2 py-0.5 rounded-full text-xs bg-amber-50 text-amber-700">
+          <span id="age-chip"></span>
+        </span>
+
+        <!-- Exp (nur falls Ablaufdatum vorhanden) -->
+        {{ if .L.ExpiresAt.Valid }}
+          <span class="px-2 py-0.5 rounded-full text-xs bg-rose-50 text-rose-700"
+                title="Expires on {{ .L.ExpiresAt.Time.Format "Mon, 02 Jan 2006" }}">Exp</span>
+        {{ end }}
+
+        <button id="copy-short" type="button" class="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">Copy</button>
+        <a class="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200" href="{{ .BaseURL }}/api/links/{{ .L.Code }}/qr.png" id="qr-link">QR</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toasts -->
+  <div id="toast-root" class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none"></div>
+
+  <!-- QR Modal -->
+  <div id="qr-modal" class="fixed inset-0 z-50 hidden">
+    <div id="qr-backdrop" class="absolute inset-0 bg-black/50 opacity-0 transition-opacity duration-200"></div>
+    <div class="absolute inset-0 flex items-center justify-center p-4">
+      <div id="qr-panel" role="dialog" aria-modal="true"
+           class="bg-white rounded-2xl shadow-xl overflow-hidden w-full max-w-sm
+                  transform transition-all duration-200 opacity-0 scale-95">
+        <div class="flex items-center justify-between px-4 py-3 border-b">
+          <div class="font-medium text-gray-800">QR Code
+            <span id="qr-code-label" class="text-gray-400 text-sm ml-2"></span>
+          </div>
+          <button id="qr-close" type="button" class="rounded-lg p-2 text-gray-500 hover:bg-gray-100" aria-label="Close">✕</button>
+        </div>
+        <div class="p-4 flex items-center justify-center bg-gray-50">
+          <img id="qr-image" alt="QR code" class="w-64 h-64 object-contain select-none" src="" />
+        </div>
+        <div class="px-4 py-3 bg-white border-t flex items-center justify-end gap-3">
+          <a id="qr-download" href="#" download
+             class="pointer-events-auto inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+              <path fill-rule="evenodd" d="M3 14.25a.75.75 0 01.75-.75h3.5a.75.75 0 010 1.5h-3.5A.75.75 0 013 14.25zm0-3.5a.75.75 0 01.75-.75h7a.75.75 0 010 1.5h-7A.75.75 0 013 10.75zm0-3.5A.75.75 0 013.75 6.5h7a.75.75 0 010 1.5h-7A.75.75 0 013 7.25zM12 2.75a.75.75 0 011.5 0V9l2.22-2.22a.75.75 0 111.06 1.06l-3.5 3.5a.75.75 0 01-1.06 0l-3.5-3.5a.75.75 0 111.06-1.06L12 9V2.75zm-6 12.5a.75.75 0 01.75-.75h10.5a.75.75 0 010 1.5H6.75a.75.75 0 01-.75-.75z" clip-rule="evenodd" />
+            </svg>
+            Download PNG
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  // Homebar nur zeigen, wenn NICHT im iframe (Overlay)
+  try {
+    if (window.top !== window.self) {
+      const hb = document.getElementById('homebar');
+      if (hb) hb.classList.add('hidden');
+    }
+  } catch(e) { /* cross-origin fallback */ }
+
+  // QR Modal
+  const a = document.getElementById('qr-link');
+  if (a) {
+    a.addEventListener('click', (e) => { e.preventDefault(); showQR(a.href, "{{ .L.Code }}"); });
+  }
+
+  // Copy
+  const copyBtn = document.getElementById('copy-short');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText("{{ .BaseURL }}/{{ .L.Code }}"); if (typeof showToast==='function') showToast('Copied!','success'); } catch(e){ console.error(e); }
+    });
+  }
+
+  // Age
+  const ageEl = document.getElementById('age-chip');
+  if (ageEl && document.body.dataset.created) {
+    ageEl.textContent = ageLabel(document.body.dataset.created);
+  }
+});
+</script>
+
+</body>
+</html>
+

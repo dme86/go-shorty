@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shorty</title>
+  <script defer src="/static/app.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <div class="max-w-3xl mx-auto p-6">
+    <header class="mb-6">
+      <h1 class="text-3xl font-bold">Shorty <span class="text-indigo-600">URL</span> Shortener</h1>
+      <p class="text-gray-600">Minimal, fast, with QR & previews.</p>
+    </header>
+
+    <section class="bg-white shadow rounded-2xl p-5">
+      <form id="createForm" class="grid gap-3">
+        <label class="block">
+          <span class="text-sm font-medium">Long URL</span>
+          <input id="url" type="url" required placeholder="https://example.com/very/long/url" class="mt-1 w-full rounded-xl border px-3 py-2">
+        </label>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="block">
+            <span class="text-sm font-medium">Expires At (optional)</span>
+            <!-- Nur Datum (ohne Uhrzeit) -->
+            <input id="expires_at" type="date" class="mt-1 w-full rounded-xl border px-3 py-2">
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Max Clicks (optional)</span>
+            <input id="max_clicks" type="number" min="1" class="mt-1 w-full rounded-xl border px-3 py-2">
+          </label>
+        </div>
+        <button class="mt-2 inline-flex items-center justify-center rounded-xl bg-indigo-600 text-white px-4 py-2 hover:bg-indigo-700">Shorten</button>
+      </form>
+    </section>
+
+    <section class="mt-8">
+      <h2 class="text-xl font-semibold mb-3">Latest Links</h2>
+      <div id="links" class="grid gap-3"></div>
+    </section>
+  </div>
+
+  <template id="linkCard">
+    <div class="bg-white border rounded-xl p-4 flex items-start justify-between gap-4">
+      <div class="min-w-0">
+        <div class="text-sm text-gray-500 truncate">
+          <span class="font-mono">/:code</span> →
+          <span class="truncate inline-block max-w-[28rem] align-bottom">:long</span>
+        </div>
+        <div class="mt-1 flex flex-wrap gap-3 text-sm items-center">
+          <a class="short text-indigo-600 hover:underline" target="_blank"></a>
+          <a class="preview text-gray-600 hover:underline">Preview</a>
+          <a class="qr text-gray-600 hover:underline" href="#">QR</a>
+          <span class="px-2 py-0.5 bg-gray-100 rounded-full">Clicks: <b class="clicks">0</b></span>
+
+          <!-- Age -->
+          <span class="age-chip px-2 py-0.5 rounded-full text-xs bg-amber-50 text-amber-700"></span>
+
+          <!-- NEW: Exp (wird per JS nur angezeigt, wenn ExpiresAt vorhanden ist) -->
+          <span class="exp-chip hidden px-2 py-0.5 rounded-full text-xs bg-rose-50 text-rose-700" title="">Exp</span>
+
+          <!-- Tags -->
+          <span class="tags flex flex-wrap gap-1"></span>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <button type="button" class="copy px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-sm">Copy</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Toasts -->
+  <div id="toast-root" class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none"></div>
+
+  <!-- QR Modal -->
+  <div id="qr-modal" class="fixed inset-0 z-50 hidden">
+    <div id="qr-backdrop" class="absolute inset-0 bg-black/50 opacity-0 transition-opacity duration-200"></div>
+    <div class="absolute inset-0 flex items-center justify-center p-4">
+      <div id="qr-panel" role="dialog" aria-modal="true" class="bg-white rounded-2xl shadow-xl overflow-hidden w-full max-w-sm transform transition-all duration-200 opacity-0 scale-95">
+        <div class="flex items-center justify-between px-4 py-3 border-b">
+          <div class="font-medium text-gray-800">QR Code <span id="qr-code-label" class="text-gray-400 text-sm ml-2"></span></div>
+          <button id="qr-close" type="button" class="rounded-lg p-2 text-gray-500 hover:bg-gray-100" aria-label="Close">✕</button>
+        </div>
+        <div class="p-4 flex items-center justify-center bg-gray-50">
+          <img id="qr-image" alt="QR code" class="w-64 h-64 object-contain select-none" src="" />
+        </div>
+        <div class="px-4 py-3 bg-white border-t flex items-center justify-end gap-3">
+          <a id="qr-download" href="#" download class="pointer-events-auto inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+              <path fill-rule="evenodd" d="M3 14.25a.75.75 0 01.75-.75h3.5a.75.75 0 010 1.5h-3.5A.75.75 0 013 14.25zm0-3.5a.75.75 0 01.75-.75h7a.75.75 0 010 1.5h-7A.75.75 0 013 10.75zm0-3.5A.75.75 0 013.75 6.5h7a.75.75 0 010 1.5h-7A.75.75 0 013 7.25zM12 2.75a.75.75 0 011.5 0V9l2.22-2.22a.75.75 0 111.06 1.06l-3.5 3.5a.75.75 0 01-1.06 0l-3.5-3.5a.75.75 0 111.06-1.06L12 9V2.75zm-6 12.5a.75.75 0 01.75-.75h10.5a.75.75 0 010 1.5H6.75a.75.75 0 01-.75-.75z" clip-rule="evenodd" />
+            </svg>
+            Download PNG
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.BASE_URL = "{{ .BaseURL }}";
+  </script>
+
+  <!-- Link Preview Modal -->
+  <div id="preview-modal" class="fixed inset-0 z-50 hidden">
+    <div id="preview-backdrop" class="absolute inset-0 bg-black/50 opacity-0 transition-opacity duration-200"></div>
+    <div class="absolute inset-0 flex items-center justify-center p-4">
+      <div id="preview-panel" role="dialog" aria-modal="true"
+           class="bg-white rounded-2xl shadow-xl overflow-hidden w-full max-w-4xl h-[80vh]
+                  transform transition-all duration-200 opacity-0 scale-95">
+        <div class="flex items-center justify-between px-4 py-3 border-b bg-white">
+          <div class="font-medium text-gray-800">Link Preview <span id="preview-code-label" class="text-gray-400 text-sm ml-2"></span></div>
+          <button id="preview-close" type="button" class="rounded-lg p-2 text-gray-500 hover:bg-gray-100" aria-label="Close">✕</button>
+        </div>
+        <iframe id="preview-iframe" class="w-full h-full bg-white" src="" title="Preview"></iframe>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
+
