@@ -149,3 +149,9 @@ scrape_configs:
 -   Tag inference is heuristic and can be extended per domain
 -   Deduplication is by **exact URL** (query differences → distinct targets)
 
+## Screenshot
+
+<p align="center">
+  <img src="images/go-shorty-web.png" alt="go-shorty"/>
+</p>
+
