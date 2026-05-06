@@ -30,6 +30,10 @@ type oauthUserInfo struct {
 	Name  string `json:"name"`
 }
 
+type ctxKey string
+
+const ctxKeyAuthSubject ctxKey = "auth_subject"
+
 func (h *Handlers) oauthConfigured() bool {
 	return h.cfg.OAuthClientID != "" &&
 		h.cfg.OAuthClientSecret != "" &&
@@ -71,8 +75,9 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 			http.Error(w, "oauth is not configured", http.StatusServiceUnavailable)
 			return
 		}
-		if _, ok := h.validateSession(r); ok {
-			next.ServeHTTP(w, r)
+		if subject, ok := h.validateSession(r); ok {
+			ctx := context.WithValue(r.Context(), ctxKeyAuthSubject, subject)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
@@ -81,6 +86,15 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
+}
+
+func authSubjectFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	v := r.Context().Value(ctxKeyAuthSubject)
+	s, _ := v.(string)
+	return strings.TrimSpace(s)
 }
 
 func (h *Handlers) AuthLogin(w http.ResponseWriter, r *http.Request) {

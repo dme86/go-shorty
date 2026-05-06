@@ -74,10 +74,14 @@ Environment variables:
 -   `OAUTH_REDIRECT_URL` – callback URL, e.g. `http://localhost:8080/auth/callback`
 -   `OAUTH_SCOPES` – comma-separated scopes (default `openid,profile,email`)
 -   `OAUTH_ALLOWED_DOMAINS` – optional comma-separated email domains (e.g. `example.com,example.org`)
+-   `RATE_LIMIT_RPS` – API rate limit refill rate per IP (default `5`)
+-   `RATE_LIMIT_BURST` – API burst size per IP (default `20`)
+-   `TRUST_PROXY_HEADERS` – trust `X-Forwarded-For` for client IP (`true` behind trusted reverse proxy)
 
 ### OAuth protection
 
 -   UI `/` and `/api/*` are protected by OAuth login.
+-   `/api/*` additionally uses per-user rate limiting (OAuth identity), with IP fallback.
 -   Public routes remain public: `/{code}`, `/preview/{code}`, `/healthz`, `/metrics`, `/static/*`.
 -   Login flow endpoints: `/auth/login`, `/auth/callback`, `/auth/logout`.
 
