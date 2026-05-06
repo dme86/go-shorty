@@ -138,6 +138,18 @@ GET /api/links/{code}/qr.png
 
 Returns a 256px PNG (the UI shows an inline modal with download).
 
+### Stats
+
+```bash
+GET /api/links/{code}/stats
+```
+
+Returns aggregated analytics:
+- `click_count` total clicks
+- `clicks_per_day` time series (`YYYY-MM-DD`)
+- `top_referrers` top referrer hosts
+- `user_agent_mix` grouped user-agent classes (`bot`, `mobile`, `desktop`, `unknown`)
+
 ## Observability
 
 -   **/healthz** → `200 ok` if DB is reachable (500ms timeout), otherwise `500 db=down`

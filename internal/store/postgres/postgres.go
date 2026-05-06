@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"strings"
 
 	pq "github.com/lib/pq"
@@ -159,7 +160,115 @@ func (p *PG) GetStats(ctx context.Context, code string) (store.Stats, error) {
 	var s store.Stats
 	s.Code = code
 	err := p.db.QueryRowContext(ctx, `SELECT click_count FROM links WHERE code=$1`, code).Scan(&s.ClickCount)
-	return s, err
+	if err != nil {
+		return s, err
+	}
+
+	dayRows, err := p.db.QueryContext(ctx, `
+		SELECT to_char(date_trunc('day', ts), 'YYYY-MM-DD') AS d, COUNT(*)::bigint
+		FROM clicks
+		WHERE code=$1
+		GROUP BY d
+		ORDER BY d ASC
+	`, code)
+	if err != nil {
+		return s, err
+	}
+	for dayRows.Next() {
+		var d store.DailyClicks
+		if err := dayRows.Scan(&d.Date, &d.Clicks); err != nil {
+			dayRows.Close()
+			return s, err
+		}
+		s.ClicksPerDay = append(s.ClicksPerDay, d)
+	}
+	if err := dayRows.Err(); err != nil {
+		dayRows.Close()
+		return s, err
+	}
+	dayRows.Close()
+
+	refRows, err := p.db.QueryContext(ctx, `
+		SELECT referer, COUNT(*)::bigint
+		FROM clicks
+		WHERE code=$1
+		  AND referer IS NOT NULL
+		  AND btrim(referer) <> ''
+		GROUP BY referer
+		ORDER BY COUNT(*) DESC
+		LIMIT 10
+	`, code)
+	if err != nil {
+		return s, err
+	}
+	for refRows.Next() {
+		var raw string
+		var c int64
+		if err := refRows.Scan(&raw, &c); err != nil {
+			refRows.Close()
+			return s, err
+		}
+		s.TopReferrers = append(s.TopReferrers, store.ReferrerHit{
+			Referrer: normalizeReferrer(raw),
+			Clicks:   c,
+		})
+	}
+	if err := refRows.Err(); err != nil {
+		refRows.Close()
+		return s, err
+	}
+	refRows.Close()
+
+	uaRows, err := p.db.QueryContext(ctx, `
+		SELECT
+			CASE
+				WHEN ua IS NULL OR btrim(ua) = '' THEN 'unknown'
+				WHEN lower(ua) LIKE '%bot%' OR lower(ua) LIKE '%crawl%' OR lower(ua) LIKE '%spider%' OR lower(ua) LIKE '%slackbot%' OR lower(ua) LIKE '%discordbot%' OR lower(ua) LIKE '%telegrambot%' OR lower(ua) LIKE '%whatsapp%' THEN 'bot'
+				WHEN lower(ua) LIKE '%mobile%' OR lower(ua) LIKE '%android%' OR lower(ua) LIKE '%iphone%' THEN 'mobile'
+				ELSE 'desktop'
+			END AS cls,
+			COUNT(*)::bigint
+		FROM clicks
+		WHERE code=$1
+		GROUP BY cls
+		ORDER BY COUNT(*) DESC
+	`, code)
+	if err != nil {
+		return s, err
+	}
+	for uaRows.Next() {
+		var u store.UAClassHit
+		if err := uaRows.Scan(&u.Class, &u.Clicks); err != nil {
+			uaRows.Close()
+			return s, err
+		}
+		s.UserAgentMix = append(s.UserAgentMix, u)
+	}
+	if err := uaRows.Err(); err != nil {
+		uaRows.Close()
+		return s, err
+	}
+	uaRows.Close()
+
+	return s, nil
+}
+
+func normalizeReferrer(raw string) string {
+	r := strings.TrimSpace(raw)
+	if r == "" {
+		return "unknown"
+	}
+	u, err := url.Parse(r)
+	if err == nil && u.Host != "" {
+		return strings.ToLower(u.Host)
+	}
+	if !strings.Contains(r, "://") {
+		u2, err2 := url.Parse("https://" + r)
+		if err2 == nil && u2.Host != "" {
+			return strings.ToLower(u2.Host)
+		}
+	}
+	return strings.ToLower(r)
 }
 
 func (p *PG) UpdateMeta(ctx context.Context, code string, md store.Meta) error {

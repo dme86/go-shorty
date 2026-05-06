@@ -32,8 +32,26 @@ type Link struct {
 }
 
 type Stats struct {
-	Code       string `json:"code"`
-	ClickCount int64  `json:"click_count"`
+	Code         string        `json:"code"`
+	ClickCount   int64         `json:"click_count"`
+	ClicksPerDay []DailyClicks `json:"clicks_per_day"`
+	TopReferrers []ReferrerHit `json:"top_referrers"`
+	UserAgentMix []UAClassHit  `json:"user_agent_mix"`
+}
+
+type DailyClicks struct {
+	Date   string `json:"date"`
+	Clicks int64  `json:"clicks"`
+}
+
+type ReferrerHit struct {
+	Referrer string `json:"referrer"`
+	Clicks   int64  `json:"clicks"`
+}
+
+type UAClassHit struct {
+	Class  string `json:"class"`
+	Clicks int64  `json:"clicks"`
 }
 
 type Meta struct {
