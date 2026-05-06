@@ -1,6 +1,10 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+	"strings"
+)
 
 type Config struct {
 	DatabaseURL         string
@@ -16,6 +20,9 @@ type Config struct {
 	OAuthRedirectURL    string
 	OAuthScopes         string
 	OAuthAllowedDomains string
+	RateLimitRPS        float64
+	RateLimitBurst      int
+	TrustProxyHeaders   bool
 }
 
 func getenv(k, def string) string {
@@ -40,5 +47,47 @@ func Load() Config {
 		OAuthRedirectURL:    getenv("OAUTH_REDIRECT_URL", ""),
 		OAuthScopes:         getenv("OAUTH_SCOPES", "openid,profile,email"),
 		OAuthAllowedDomains: getenv("OAUTH_ALLOWED_DOMAINS", ""),
+		RateLimitRPS:        getenvFloat("RATE_LIMIT_RPS", 5),
+		RateLimitBurst:      getenvInt("RATE_LIMIT_BURST", 20),
+		TrustProxyHeaders:   getenvBool("TRUST_PROXY_HEADERS", false),
+	}
+}
+
+func getenvInt(k string, def int) int {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func getenvFloat(k string, def float64) float64 {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func getenvBool(k string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(k)))
+	if v == "" {
+		return def
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
 	}
 }

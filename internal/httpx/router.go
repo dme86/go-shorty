@@ -124,6 +124,8 @@ func NewHandlers(cfg config.Config, st store.Store, efs fs.FS) (*Handlers, error
 }
 
 func (h *Handlers) Mount(r *chi.Mux) {
+	apiLimiter := newIPRateLimiter(h.cfg.RateLimitRPS, h.cfg.RateLimitBurst, h.cfg.TrustProxyHeaders)
+
 	// Health & Metrics
 	r.Get("/healthz", h.Healthz)
 	r.Handle("/metrics", promhttp.Handler())
@@ -138,11 +140,14 @@ func (h *Handlers) Mount(r *chi.Mux) {
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.RequireAuth)
 		pr.Get("/", h.Index)
-		pr.Post("/api/links", h.API_CreateLink)
-		pr.Get("/api/links", h.API_ListLinks)
-		pr.Get("/api/links/{code}", h.API_GetLink)
-		pr.Get("/api/links/{code}/stats", h.API_GetStats)
-		pr.Get("/api/links/{code}/qr.png", h.API_QR)
+		pr.Group(func(ar chi.Router) {
+			ar.Use(apiLimiter.Middleware)
+			ar.Post("/api/links", h.API_CreateLink)
+			ar.Get("/api/links", h.API_ListLinks)
+			ar.Get("/api/links/{code}", h.API_GetLink)
+			ar.Get("/api/links/{code}/stats", h.API_GetStats)
+			ar.Get("/api/links/{code}/qr.png", h.API_QR)
+		})
 	})
 
 	// Public resolve/preview routes
