@@ -31,6 +31,7 @@ Requirements
 - Go ≥ 1.21
 - Docker (for local Postgres)
 - `goose` (optional; the Makefile can install it)
+- Node.js 20+ (for frontend build/dev with Vite)
 
 ```bash
 # 1) Start Postgres via Docker and wait until ready
@@ -47,6 +48,48 @@ make run
 
 # Open the UI
 open http://localhost:8080
+```
+
+Frontend workflow (Vite + Tailwind + TypeScript):
+
+```bash
+# install frontend deps once
+make fe-install
+
+# start frontend dev server (HMR)
+make fe-dev
+
+# build frontend assets into web/static/dist
+make fe-build
+```
+
+Frontend source files now live in `web/frontend/src`:
+- `main.ts` bootstraps the app
+- `app.ts` contains UI behavior
+- `styles.css` contains Tailwind/CSS layers
+
+Live frontend development:
+
+```bash
+# Terminal 1: backend
+make run
+
+# Terminal 2: frontend HMR
+make fe-dev
+```
+
+Then open the Vite URL printed in terminal (typically `http://localhost:5173`).
+UI changes in `web/frontend/src/*` reload instantly via HMR.
+Template changes in `web/templates/*` require a normal browser refresh.
+
+Production/static asset flow:
+
+```bash
+# build frontend bundle served by Go
+make fe-build
+
+# run backend (serves /static/dist/assets/*)
+make run
 ```
 
 **Endpoints**
@@ -174,8 +217,9 @@ scrape_configs:
 
 ## Security & Scope
 
--   No authentication / multi-tenant isolation (kept intentionally minimal)
--   No rate limiting or abuse protection
+-   OAuth login protects UI and API endpoints
+-   Per-user API rate limiting with IP fallback
+-   No multi-tenant isolation (single-tenant internal tool style)
 -   Custom aliases disabled by design
 -   Tag inference is heuristic and can be extended per domain
 -   Deduplication is by **exact URL** (query differences → distinct targets)
