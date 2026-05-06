@@ -8,6 +8,8 @@ A fast, production-ready URL shortener written in Go.
 
 **Highlights**
 - PostgreSQL storage with migrations (via `goose`)
+- OAuth-protected UI/API (OpenID Connect providers)
+- Multi-tenant data isolation via `tenant_id`
 - Bot-aware **Preview** pages (Slack/Twitter/Discord/etc.) with Open Graph meta
 - **QR codes** (PNG) for every link
 - **Tags**: inferred from host/path/query and OG metadata
@@ -130,6 +132,7 @@ Environment variables:
 
 ### Multi-tenancy
 
+-   What multi-tenant means here: multiple organizations/teams can use the same running app and database, while API-level reads/writes are isolated per tenant.
 -   API data access is tenant-scoped (`links`, `stats`, `dedupe`, `tags`, QR lookup).
 -   Tenant is derived from OAuth identity:
     -   if subject is an email, tenant = normalized email domain (e.g. `alice@acme.com` → `acme-com`)
