@@ -166,6 +166,11 @@ type createIn struct {
 }
 
 func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromRequest(r)
+	if tenantID == "" {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
 	var in createIn
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -182,7 +187,7 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 	log.Printf("API_CreateLink begin url=%s expires=%v max=%v", in.URL, in.ExpiresAt, in.MaxClicks)
 
 	// De-duplicate: if an active short link for this URL exists, return it
-	if existing, err := h.store.FindActiveByLongURL(r.Context(), in.URL); err == nil {
+	if existing, err := h.store.FindActiveByLongURL(r.Context(), tenantID, in.URL); err == nil {
 		log.Printf("API_CreateLink dedupe hit code=%s for url=%s", existing.Code, in.URL)
 		resp := map[string]any{
 			"code":        existing.Code,
@@ -216,7 +221,7 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		if _, err := h.store.GetLink(r.Context(), c); errors.Is(err, store.ErrNotFound) {
+		if _, err := h.store.GetLink(r.Context(), tenantID, c); errors.Is(err, store.ErrNotFound) {
 			code = c
 			break
 		}
@@ -227,6 +232,7 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	L := store.Link{
+		TenantID:  tenantID,
 		Code:      code,
 		LongURL:   in.URL,
 		CreatedAt: time.Now().UTC(),
@@ -241,7 +247,7 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 		L.MaxClicks = sql.NullInt64{Valid: true, Int64: *in.MaxClicks}
 	}
 
-	if err := h.store.CreateLink(r.Context(), L); err != nil {
+	if err := h.store.CreateLink(r.Context(), tenantID, L); err != nil {
 		// explicit console log
 		var pqe *pq.Error
 		if errors.As(err, &pqe) {
@@ -263,20 +269,20 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 	metricLinksCreated.Inc()
 
 	// fetch meta in background (and infer tags)
-	go func(ctx context.Context, code string, linkURL string) {
+	go func(ctx context.Context, tenantID, code string, linkURL string) {
 		mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
 		md, err := meta.Fetch(mctx, linkURL, 5*time.Second)
 		if err == nil {
 			md.Tags = meta.InferTags(linkURL, md)
-			if err := h.store.UpdateMeta(context.Background(), code, md); err != nil {
+			if err := h.store.UpdateMeta(context.Background(), tenantID, code, md); err != nil {
 				log.Printf("update meta failed for %s: %v", code, err)
 			}
 		} else {
 			log.Printf("meta fetch failed for %s: %v", linkURL, err)
 		}
-	}(context.Background(), code, L.LongURL)
+	}(context.Background(), tenantID, code, L.LongURL)
 
 	resp := map[string]any{
 		"code":        code,
@@ -289,6 +295,11 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) API_ListLinks(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromRequest(r)
+	if tenantID == "" {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
 	tag := r.URL.Query().Get("tag")
 
 	var (
@@ -296,9 +307,9 @@ func (h *Handlers) API_ListLinks(w http.ResponseWriter, r *http.Request) {
 		err   error
 	)
 	if tag != "" {
-		links, err = h.store.ListLinksByTag(r.Context(), tag, 50)
+		links, err = h.store.ListLinksByTag(r.Context(), tenantID, tag, 50)
 	} else {
-		links, err = h.store.ListLinks(r.Context(), 50)
+		links, err = h.store.ListLinks(r.Context(), tenantID, 50)
 	}
 	if err != nil {
 		log.Printf("API_ListLinks db error: %v", err)
@@ -310,8 +321,13 @@ func (h *Handlers) API_ListLinks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) API_GetLink(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromRequest(r)
+	if tenantID == "" {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
 	code := chi.URLParam(r, "code")
-	L, err := h.store.GetLink(r.Context(), code)
+	L, err := h.store.GetLink(r.Context(), tenantID, code)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -321,8 +337,13 @@ func (h *Handlers) API_GetLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) API_GetStats(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromRequest(r)
+	if tenantID == "" {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
 	code := chi.URLParam(r, "code")
-	st, err := h.store.GetStats(r.Context(), code)
+	st, err := h.store.GetStats(r.Context(), tenantID, code)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -332,8 +353,13 @@ func (h *Handlers) API_GetStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) API_QR(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromRequest(r)
+	if tenantID == "" {
+		http.Error(w, "missing tenant", http.StatusUnauthorized)
+		return
+	}
 	code := chi.URLParam(r, "code")
-	_, err := h.store.GetLink(r.Context(), code)
+	_, err := h.store.GetLink(r.Context(), tenantID, code)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -351,7 +377,7 @@ func (h *Handlers) API_QR(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
-	L, err := h.store.GetLink(r.Context(), code)
+	L, err := h.store.GetLinkByCode(r.Context(), code)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -369,7 +395,7 @@ func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Resolve(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
-	L, err := h.store.GetLink(r.Context(), code)
+	L, err := h.store.GetLinkByCode(r.Context(), code)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -391,7 +417,7 @@ func (h *Handlers) Resolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, err := h.store.TryIncrementClick(r.Context(), code, r.UserAgent(), r.Referer(), clientCountry(r))
+	allowed, err := h.store.TryIncrementClick(r.Context(), L.TenantID, code, r.UserAgent(), r.Referer(), clientCountry(r))
 	if err != nil {
 		log.Printf("Resolve/TryIncrementClick db error: %v", err)
 		http.Error(w, "db error", http.StatusInternalServerError)

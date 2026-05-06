@@ -33,6 +33,7 @@ type oauthUserInfo struct {
 type ctxKey string
 
 const ctxKeyAuthSubject ctxKey = "auth_subject"
+const ctxKeyTenantID ctxKey = "tenant_id"
 
 func (h *Handlers) oauthConfigured() bool {
 	return h.cfg.OAuthClientID != "" &&
@@ -76,7 +77,9 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 		if subject, ok := h.validateSession(r); ok {
+			tenantID := tenantFromSubject(subject)
 			ctx := context.WithValue(r.Context(), ctxKeyAuthSubject, subject)
+			ctx = context.WithValue(ctx, ctxKeyTenantID, tenantID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -95,6 +98,52 @@ func authSubjectFromRequest(r *http.Request) string {
 	v := r.Context().Value(ctxKeyAuthSubject)
 	s, _ := v.(string)
 	return strings.TrimSpace(s)
+}
+
+func tenantIDFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	v := r.Context().Value(ctxKeyTenantID)
+	s, _ := v.(string)
+	return strings.TrimSpace(s)
+}
+
+func tenantFromSubject(subject string) string {
+	s := strings.ToLower(strings.TrimSpace(subject))
+	if s == "" {
+		return "default"
+	}
+	if at := strings.LastIndex(s, "@"); at >= 0 && at < len(s)-1 {
+		return sanitizeTenantID(s[at+1:])
+	}
+	return sanitizeTenantID(s)
+}
+
+func sanitizeTenantID(in string) string {
+	in = strings.ToLower(strings.TrimSpace(in))
+	if in == "" {
+		return "default"
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range in {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "default"
+	}
+	return out
 }
 
 func (h *Handlers) AuthLogin(w http.ResponseWriter, r *http.Request) {

@@ -128,6 +128,15 @@ Environment variables:
 -   Public routes remain public: `/{code}`, `/preview/{code}`, `/healthz`, `/metrics`, `/static/*`.
 -   Login flow endpoints: `/auth/login`, `/auth/callback`, `/auth/logout`.
 
+### Multi-tenancy
+
+-   API data access is tenant-scoped (`links`, `stats`, `dedupe`, `tags`, QR lookup).
+-   Tenant is derived from OAuth identity:
+    -   if subject is an email, tenant = normalized email domain (e.g. `alice@acme.com` → `acme-com`)
+    -   otherwise tenant = normalized subject value
+-   Public short-code routes (`/{code}`, `/preview/{code}`) remain globally resolvable by code.
+-   Migration `0004_multitenancy.sql` adds `tenant_id` to `links` and `clicks` and backfills existing rows.
+
 ## API Overview
 
 ### Create a short link
@@ -219,7 +228,7 @@ scrape_configs:
 
 -   OAuth login protects UI and API endpoints
 -   Per-user API rate limiting with IP fallback
--   No multi-tenant isolation (single-tenant internal tool style)
+-   Tenant data isolation at API/storage level via `tenant_id`
 -   Custom aliases disabled by design
 -   Tag inference is heuristic and can be extended per domain
 -   Deduplication is by **exact URL** (query differences → distinct targets)

@@ -17,43 +17,53 @@ import (
 
 type mockStore struct {
 	getLinkFn           func(ctx context.Context, code string) (store.Link, error)
-	tryIncrementClickFn func(ctx context.Context, code, ua, referer, country string) (bool, error)
+	tryIncrementClickFn func(ctx context.Context, tenantID, code, ua, referer, country string) (bool, error)
 	tryIncrementCalls   int
 }
 
-func (m *mockStore) CreateLink(ctx context.Context, l store.Link) error { return nil }
-func (m *mockStore) GetLink(ctx context.Context, code string) (store.Link, error) {
+func (m *mockStore) CreateLink(ctx context.Context, tenantID string, l store.Link) error { return nil }
+func (m *mockStore) GetLink(ctx context.Context, tenantID, code string) (store.Link, error) {
 	if m.getLinkFn != nil {
 		return m.getLinkFn(ctx, code)
 	}
 	return store.Link{}, store.ErrNotFound
 }
-func (m *mockStore) ListLinks(ctx context.Context, limit int) ([]store.Link, error) { return nil, nil }
-func (m *mockStore) IncrementClick(ctx context.Context, code, ua, referer, country string) error {
+func (m *mockStore) GetLinkByCode(ctx context.Context, code string) (store.Link, error) {
+	if m.getLinkFn != nil {
+		return m.getLinkFn(ctx, code)
+	}
+	return store.Link{}, store.ErrNotFound
+}
+func (m *mockStore) ListLinks(ctx context.Context, tenantID string, limit int) ([]store.Link, error) {
+	return nil, nil
+}
+func (m *mockStore) IncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) error {
 	return nil
 }
-func (m *mockStore) TryIncrementClick(ctx context.Context, code, ua, referer, country string) (bool, error) {
+func (m *mockStore) TryIncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) (bool, error) {
 	m.tryIncrementCalls++
 	if m.tryIncrementClickFn != nil {
-		return m.tryIncrementClickFn(ctx, code, ua, referer, country)
+		return m.tryIncrementClickFn(ctx, tenantID, code, ua, referer, country)
 	}
 	return true, nil
 }
-func (m *mockStore) FindActiveByLongURL(ctx context.Context, longURL string) (store.Link, error) {
+func (m *mockStore) FindActiveByLongURL(ctx context.Context, tenantID, longURL string) (store.Link, error) {
 	return store.Link{}, store.ErrNotFound
 }
-func (m *mockStore) ListLinksByTag(ctx context.Context, tag string, limit int) ([]store.Link, error) {
+func (m *mockStore) ListLinksByTag(ctx context.Context, tenantID, tag string, limit int) ([]store.Link, error) {
 	return nil, nil
 }
-func (m *mockStore) GetStats(ctx context.Context, code string) (store.Stats, error) {
+func (m *mockStore) GetStats(ctx context.Context, tenantID, code string) (store.Stats, error) {
 	return store.Stats{}, store.ErrNotFound
 }
-func (m *mockStore) UpdateMeta(ctx context.Context, code string, md store.Meta) error { return nil }
-func (m *mockStore) Ping(ctx context.Context) error                                   { return nil }
-func (m *mockStore) CountLinks(ctx context.Context) (int64, error)                    { return 0, nil }
-func (m *mockStore) CountActiveLinks(ctx context.Context) (int64, error)              { return 0, nil }
-func (m *mockStore) CountDistinctTags(ctx context.Context) (int64, error)             { return 0, nil }
-func (m *mockStore) SumClicks(ctx context.Context) (int64, error)                     { return 0, nil }
+func (m *mockStore) UpdateMeta(ctx context.Context, tenantID, code string, md store.Meta) error {
+	return nil
+}
+func (m *mockStore) Ping(ctx context.Context) error                       { return nil }
+func (m *mockStore) CountLinks(ctx context.Context) (int64, error)        { return 0, nil }
+func (m *mockStore) CountActiveLinks(ctx context.Context) (int64, error)  { return 0, nil }
+func (m *mockStore) CountDistinctTags(ctx context.Context) (int64, error) { return 0, nil }
+func (m *mockStore) SumClicks(ctx context.Context) (int64, error)         { return 0, nil }
 
 func TestResolve_GuardsAndRedirect(t *testing.T) {
 	now := time.Now().UTC()
@@ -101,7 +111,7 @@ func TestResolve_GuardsAndRedirect(t *testing.T) {
 				link := tt.link
 				ms.getLinkFn = func(context.Context, string) (store.Link, error) { return link, nil }
 			}
-			ms.tryIncrementClickFn = func(context.Context, string, string, string, string) (bool, error) {
+			ms.tryIncrementClickFn = func(context.Context, string, string, string, string, string) (bool, error) {
 				if tt.tryErr != nil {
 					return false, tt.tryErr
 				}

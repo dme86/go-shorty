@@ -15,11 +15,11 @@ type PG struct{ db *sql.DB }
 
 func New(db *sql.DB) *PG { return &PG{db: db} }
 
-func (p *PG) CreateLink(ctx context.Context, l store.Link) error {
+func (p *PG) CreateLink(ctx context.Context, tenantID string, l store.Link) error {
 	_, err := p.db.ExecContext(ctx, `
-        INSERT INTO links (code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags)
-        VALUES ($1,$2,NULL,NULL,NULL,NULL, NOW(), $3, $4, $5, 0, $6, $7)`,
-		l.Code, l.LongURL, l.ExpiresAt, l.IsActive, l.MaxClicks, l.Custom, pq.Array(l.Tags),
+        INSERT INTO links (tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags)
+        VALUES ($1,$2,$3,NULL,NULL,NULL,NULL, NOW(), $4, $5, $6, 0, $7, $8)`,
+		tenantID, l.Code, l.LongURL, l.ExpiresAt, l.IsActive, l.MaxClicks, l.Custom, pq.Array(l.Tags),
 	)
 	if err != nil {
 		if isUnique(err) {
@@ -72,24 +72,34 @@ func (p *PG) SumClicks(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-func (p *PG) GetLink(ctx context.Context, code string) (store.Link, error) {
+func (p *PG) GetLink(ctx context.Context, tenantID, code string) (store.Link, error) {
 	var l store.Link
 	err := p.db.QueryRowContext(ctx, `
-        SELECT code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
-        FROM links WHERE code=$1`, code).
-		Scan(&l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags))
+        SELECT tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
+        FROM links WHERE tenant_id=$1 AND code=$2`, tenantID, code).
+		Scan(&l.TenantID, &l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags))
 	return l, err
 }
 
-func (p *PG) ListLinks(ctx context.Context, limit int) ([]store.Link, error) {
+func (p *PG) GetLinkByCode(ctx context.Context, code string) (store.Link, error) {
+	var l store.Link
+	err := p.db.QueryRowContext(ctx, `
+        SELECT tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
+        FROM links WHERE code=$1`, code).
+		Scan(&l.TenantID, &l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags))
+	return l, err
+}
+
+func (p *PG) ListLinks(ctx context.Context, tenantID string, limit int) ([]store.Link, error) {
 	rows, err := p.db.QueryContext(ctx, `
-        SELECT code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
+        SELECT tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
         FROM links
-        WHERE is_active = TRUE
+        WHERE tenant_id = $1
+          AND is_active = TRUE
           AND (expires_at IS NULL OR now() < expires_at)
           AND (max_clicks IS NULL OR click_count < max_clicks)
         ORDER BY created_at DESC
-        LIMIT $1`, limit)
+        LIMIT $2`, tenantID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +108,7 @@ func (p *PG) ListLinks(ctx context.Context, limit int) ([]store.Link, error) {
 	res := []store.Link{}
 	for rows.Next() {
 		var l store.Link
-		if err := rows.Scan(&l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags)); err != nil {
+		if err := rows.Scan(&l.TenantID, &l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags)); err != nil {
 			return nil, err
 		}
 		res = append(res, l)
@@ -106,7 +116,7 @@ func (p *PG) ListLinks(ctx context.Context, limit int) ([]store.Link, error) {
 	return res, rows.Err()
 }
 
-func (p *PG) TryIncrementClick(ctx context.Context, code, ua, referer, country string) (bool, error) {
+func (p *PG) TryIncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) (bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -118,12 +128,13 @@ func (p *PG) TryIncrementClick(ctx context.Context, code, ua, referer, country s
 	err = tx.QueryRowContext(ctx, `
         UPDATE links
         SET click_count = click_count + 1
-        WHERE code=$1
+        WHERE tenant_id=$1
+          AND code=$2
           AND is_active = TRUE
           AND (expires_at IS NULL OR now() < expires_at)
           AND (max_clicks IS NULL OR click_count < max_clicks)
         RETURNING true
-    `, code).Scan(&ok)
+    `, tenantID, code).Scan(&ok)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -131,7 +142,7 @@ func (p *PG) TryIncrementClick(ctx context.Context, code, ua, referer, country s
 		return false, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `INSERT INTO clicks (code, ua, referer, country) VALUES ($1,$2,$3,$4)`, code, ua, referer, country); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO clicks (tenant_id, code, ua, referer, country) VALUES ($1,$2,$3,$4,$5)`, tenantID, code, ua, referer, country); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -140,26 +151,27 @@ func (p *PG) TryIncrementClick(ctx context.Context, code, ua, referer, country s
 	return true, nil
 }
 
-func (p *PG) IncrementClick(ctx context.Context, code, ua, referer, country string) error {
+func (p *PG) IncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `UPDATE links SET click_count=click_count+1 WHERE code=$1`, code); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE links SET click_count=click_count+1 WHERE tenant_id=$1 AND code=$2`, tenantID, code); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO clicks (code, ua, referer, country) VALUES ($1,$2,$3,$4)`, code, ua, referer, country); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO clicks (tenant_id, code, ua, referer, country) VALUES ($1,$2,$3,$4,$5)`, tenantID, code, ua, referer, country); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (p *PG) GetStats(ctx context.Context, code string) (store.Stats, error) {
+func (p *PG) GetStats(ctx context.Context, tenantID, code string) (store.Stats, error) {
 	var s store.Stats
+	s.TenantID = tenantID
 	s.Code = code
-	err := p.db.QueryRowContext(ctx, `SELECT click_count FROM links WHERE code=$1`, code).Scan(&s.ClickCount)
+	err := p.db.QueryRowContext(ctx, `SELECT click_count FROM links WHERE tenant_id=$1 AND code=$2`, tenantID, code).Scan(&s.ClickCount)
 	if err != nil {
 		return s, err
 	}
@@ -167,10 +179,10 @@ func (p *PG) GetStats(ctx context.Context, code string) (store.Stats, error) {
 	dayRows, err := p.db.QueryContext(ctx, `
 		SELECT to_char(date_trunc('day', ts), 'YYYY-MM-DD') AS d, COUNT(*)::bigint
 		FROM clicks
-		WHERE code=$1
+		WHERE tenant_id=$1 AND code=$2
 		GROUP BY d
 		ORDER BY d ASC
-	`, code)
+	`, tenantID, code)
 	if err != nil {
 		return s, err
 	}
@@ -191,13 +203,14 @@ func (p *PG) GetStats(ctx context.Context, code string) (store.Stats, error) {
 	refRows, err := p.db.QueryContext(ctx, `
 		SELECT referer, COUNT(*)::bigint
 		FROM clicks
-		WHERE code=$1
+		WHERE tenant_id=$1
+		  AND code=$2
 		  AND referer IS NOT NULL
 		  AND btrim(referer) <> ''
 		GROUP BY referer
 		ORDER BY COUNT(*) DESC
 		LIMIT 10
-	`, code)
+	`, tenantID, code)
 	if err != nil {
 		return s, err
 	}
@@ -229,10 +242,11 @@ func (p *PG) GetStats(ctx context.Context, code string) (store.Stats, error) {
 			END AS cls,
 			COUNT(*)::bigint
 		FROM clicks
-		WHERE code=$1
+		WHERE tenant_id=$1
+		  AND code=$2
 		GROUP BY cls
 		ORDER BY COUNT(*) DESC
-	`, code)
+	`, tenantID, code)
 	if err != nil {
 		return s, err
 	}
@@ -271,40 +285,42 @@ func normalizeReferrer(raw string) string {
 	return strings.ToLower(r)
 }
 
-func (p *PG) UpdateMeta(ctx context.Context, code string, md store.Meta) error {
+func (p *PG) UpdateMeta(ctx context.Context, tenantID, code string, md store.Meta) error {
 	_, err := p.db.ExecContext(ctx, `
-        UPDATE links SET title=$2, description=$3, image_url=$4, site_name=$5, tags=$6 WHERE code=$1`,
-		code, nullable(md.Title), nullable(md.Description), nullable(md.ImageURL), nullable(md.SiteName), pq.Array(md.Tags),
+        UPDATE links SET title=$3, description=$4, image_url=$5, site_name=$6, tags=$7 WHERE tenant_id=$1 AND code=$2`,
+		tenantID, code, nullable(md.Title), nullable(md.Description), nullable(md.ImageURL), nullable(md.SiteName), pq.Array(md.Tags),
 	)
 	return err
 }
 
-func (p *PG) FindActiveByLongURL(ctx context.Context, longURL string) (store.Link, error) {
+func (p *PG) FindActiveByLongURL(ctx context.Context, tenantID, longURL string) (store.Link, error) {
 	var l store.Link
 	err := p.db.QueryRowContext(ctx, `
-        SELECT code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
+        SELECT tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
         FROM links
-        WHERE long_url = $1
+        WHERE tenant_id = $1
+          AND long_url = $2
           AND is_active = TRUE
           AND (expires_at IS NULL OR now() < expires_at)
           AND (max_clicks IS NULL OR click_count < max_clicks)
         ORDER BY created_at DESC
         LIMIT 1
-    `, longURL).
-		Scan(&l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags))
+    `, tenantID, longURL).
+		Scan(&l.TenantID, &l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags))
 	return l, err
 }
 
-func (p *PG) ListLinksByTag(ctx context.Context, tag string, limit int) ([]store.Link, error) {
+func (p *PG) ListLinksByTag(ctx context.Context, tenantID, tag string, limit int) ([]store.Link, error) {
 	rows, err := p.db.QueryContext(ctx, `
-        SELECT code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
+        SELECT tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
         FROM links
-        WHERE is_active = TRUE
+        WHERE tenant_id = $1
+          AND is_active = TRUE
           AND (expires_at IS NULL OR now() < expires_at)
           AND (max_clicks IS NULL OR click_count < max_clicks)
-          AND tags @> ARRAY[$1]::text[]
+          AND tags @> ARRAY[$2]::text[]
         ORDER BY created_at DESC
-        LIMIT $2`, tag, limit)
+        LIMIT $3`, tenantID, tag, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +329,7 @@ func (p *PG) ListLinksByTag(ctx context.Context, tag string, limit int) ([]store
 	res := []store.Link{}
 	for rows.Next() {
 		var l store.Link
-		if err := rows.Scan(&l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags)); err != nil {
+		if err := rows.Scan(&l.TenantID, &l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags)); err != nil {
 			return nil, err
 		}
 		res = append(res, l)

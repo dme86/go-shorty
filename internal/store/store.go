@@ -16,6 +16,7 @@ type ErrConflict struct{ Msg string }
 func (e *ErrConflict) Error() string { return e.Msg }
 
 type Link struct {
+	TenantID    string         `json:"tenant_id"`
 	Code        string         `json:"code"`
 	LongURL     string         `json:"long_url"`
 	Title       sql.NullString `json:"title"`
@@ -32,6 +33,7 @@ type Link struct {
 }
 
 type Stats struct {
+	TenantID     string        `json:"tenant_id"`
 	Code         string        `json:"code"`
 	ClickCount   int64         `json:"click_count"`
 	ClicksPerDay []DailyClicks `json:"clicks_per_day"`
@@ -63,15 +65,16 @@ type Meta struct {
 }
 
 type Store interface {
-	CreateLink(ctx context.Context, l Link) error
-	GetLink(ctx context.Context, code string) (Link, error)
-	ListLinks(ctx context.Context, limit int) ([]Link, error)
-	IncrementClick(ctx context.Context, code, ua, referer, country string) error
-	TryIncrementClick(ctx context.Context, code, ua, referer, country string) (bool, error)
-	FindActiveByLongURL(ctx context.Context, longURL string) (Link, error)
-	ListLinksByTag(ctx context.Context, tag string, limit int) ([]Link, error)
-	GetStats(ctx context.Context, code string) (Stats, error)
-	UpdateMeta(ctx context.Context, code string, md Meta) error
+	CreateLink(ctx context.Context, tenantID string, l Link) error
+	GetLink(ctx context.Context, tenantID, code string) (Link, error)
+	GetLinkByCode(ctx context.Context, code string) (Link, error)
+	ListLinks(ctx context.Context, tenantID string, limit int) ([]Link, error)
+	IncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) error
+	TryIncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) (bool, error)
+	FindActiveByLongURL(ctx context.Context, tenantID, longURL string) (Link, error)
+	ListLinksByTag(ctx context.Context, tenantID, tag string, limit int) ([]Link, error)
+	GetStats(ctx context.Context, tenantID, code string) (Stats, error)
+	UpdateMeta(ctx context.Context, tenantID, code string, md Meta) error
 	Ping(ctx context.Context) error
 	CountLinks(ctx context.Context) (int64, error)
 	CountActiveLinks(ctx context.Context) (int64, error)
