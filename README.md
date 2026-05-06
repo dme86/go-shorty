@@ -65,6 +65,21 @@ Environment variables:
 -   `BASE_URL` – public base URL, e.g. `http://localhost:8080` or `https://sho.rt`
 -   `DATABASE_URL` – Postgres DSN used by the server
 -   `DB_URL` – Postgres DSN used by `make`/`goose`
+-   `SESSION_SECRET` – random secret used to sign auth session cookies
+-   `OAUTH_CLIENT_ID` – OAuth client id
+-   `OAUTH_CLIENT_SECRET` – OAuth client secret
+-   `OAUTH_AUTH_URL` – provider authorize endpoint
+-   `OAUTH_TOKEN_URL` – provider token endpoint
+-   `OAUTH_USERINFO_URL` – provider userinfo endpoint (must return at least `email` or `sub`)
+-   `OAUTH_REDIRECT_URL` – callback URL, e.g. `http://localhost:8080/auth/callback`
+-   `OAUTH_SCOPES` – comma-separated scopes (default `openid,profile,email`)
+-   `OAUTH_ALLOWED_DOMAINS` – optional comma-separated email domains (e.g. `example.com,example.org`)
+
+### OAuth protection
+
+-   UI `/` and `/api/*` are protected by OAuth login.
+-   Public routes remain public: `/{code}`, `/preview/{code}`, `/healthz`, `/metrics`, `/static/*`.
+-   Login flow endpoints: `/auth/login`, `/auth/callback`, `/auth/logout`.
 
 ## API Overview
 
@@ -154,4 +169,3 @@ scrape_configs:
 <p align="center">
   <img src="images/go-shorty-web.png" alt="go-shorty"/>
 </p>
-

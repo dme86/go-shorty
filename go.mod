@@ -1,6 +1,6 @@
 module github.com/example/shorty
 
-go 1.23.0
+go 1.25.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.8.1
@@ -12,6 +12,7 @@ require (
 require (
 	github.com/lib/pq v1.10.9
 	github.com/prometheus/client_golang v1.23.2
+	golang.org/x/oauth2 v0.36.0
 )
 
 require (

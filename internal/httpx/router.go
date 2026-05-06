@@ -128,16 +128,24 @@ func (h *Handlers) Mount(r *chi.Mux) {
 	r.Get("/healthz", h.Healthz)
 	r.Handle("/metrics", promhttp.Handler())
 
-	// Static + App routes
-	r.Get("/", h.Index)
+	// Public auth + static routes
+	r.Get("/auth/login", h.AuthLogin)
+	r.Get("/auth/callback", h.AuthCallback)
+	r.Get("/auth/logout", h.AuthLogout)
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(h.staticFS)))
 
-	r.Post("/api/links", h.API_CreateLink)
-	r.Get("/api/links", h.API_ListLinks)
-	r.Get("/api/links/{code}", h.API_GetLink)
-	r.Get("/api/links/{code}/stats", h.API_GetStats)
-	r.Get("/api/links/{code}/qr.png", h.API_QR)
+	// Protected UI + API routes
+	r.Group(func(pr chi.Router) {
+		pr.Use(h.RequireAuth)
+		pr.Get("/", h.Index)
+		pr.Post("/api/links", h.API_CreateLink)
+		pr.Get("/api/links", h.API_ListLinks)
+		pr.Get("/api/links/{code}", h.API_GetLink)
+		pr.Get("/api/links/{code}/stats", h.API_GetStats)
+		pr.Get("/api/links/{code}/qr.png", h.API_QR)
+	})
 
+	// Public resolve/preview routes
 	r.Get("/preview/{code}", h.Preview)
 	r.Get("/{code}", h.Resolve)
 }
