@@ -1,0 +1,3 @@
+// Placeholder build artifact.
+// Run `make fe-build` to regenerate with Vite.
+window.__shortyFrontendBooted = window.__shortyFrontendBooted || true;

@@ -10,7 +10,8 @@ PG_PASS?=shorty
 PG_DB?=shorty
 
 .PHONY: run build fmt migrate-up migrate-down create-migration \
-        db-up db-down db-stop db-logs db-psql db-wait goose-install
+        db-up db-down db-stop db-logs db-psql db-wait goose-install \
+        fe-install fe-dev fe-build
 
 run:
 	BASE_URL=http://localhost:8080 DATABASE_URL="$(DB_URL)" go run ./cmd/server
@@ -78,3 +79,11 @@ db-psql:
 goose-install:
 	go install github.com/pressly/goose/v3/cmd/goose@latest
 
+fe-install:
+	cd web/frontend && npm install
+
+fe-dev:
+	cd web/frontend && npm run dev
+
+fe-build:
+	cd web/frontend && npm run build
