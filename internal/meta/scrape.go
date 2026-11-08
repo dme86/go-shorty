@@ -99,34 +99,32 @@ func readMetadataHTML(resp *http.Response) ([]byte, error) {
 
 // InferTags: Host + Pfad + Query + Keywords aus Meta → Tags (max 8).
 func InferTags(target string, md store.Meta) []string {
-	tags := map[string]struct{}{}
-
+	// Prioritize host/service tags, then path/query, then metadata text.
+	// First-seen ordering is stable and avoids random Go map iteration.
+	out := make([]string, 0, 8)
+	seen := make(map[string]struct{})
+	appendUnique := func(tags []string) {
+		for _, tag := range tags {
+			tag = strings.ToLower(strings.TrimSpace(tag))
+			if tag == "" {
+				continue
+			}
+			if _, ok := seen[tag]; ok {
+				continue
+			}
+			seen[tag] = struct{}{}
+			if len(out) < 8 {
+				out = append(out, tag)
+			}
+		}
+	}
 	if u, err := neturl.Parse(target); err == nil && u != nil {
-		for _, t := range hostTags(u.Hostname()) {
-			tags[t] = struct{}{}
-		}
-		for _, t := range pathTags(u.Path) {
-			tags[t] = struct{}{}
-		}
-		for _, t := range queryTags(u.Query()) {
-			tags[t] = struct{}{}
-		}
+		appendUnique(hostTags(u.Hostname()))
+		appendUnique(pathTags(u.Path))
+		appendUnique(queryTags(u.Query()))
 	}
-
-	for _, w := range keywords(md.Title) {
-		tags[w] = struct{}{}
-	}
-	for _, w := range keywords(md.Description) {
-		tags[w] = struct{}{}
-	}
-
-	out := make([]string, 0, len(tags))
-	for k := range tags {
-		out = append(out, k)
-		if len(out) >= 8 {
-			break
-		}
-	}
+	appendUnique(keywords(md.Title))
+	appendUnique(keywords(md.Description))
 	return out
 }
 

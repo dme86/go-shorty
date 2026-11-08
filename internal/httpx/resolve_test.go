@@ -17,11 +17,18 @@ import (
 
 type mockStore struct {
 	getLinkFn           func(ctx context.Context, code string) (store.Link, error)
+	findFn              func(ctx context.Context, tenantID, url string, expiresAt *time.Time, maxClicks *int64) (store.Link, error)
+	createFn            func(ctx context.Context, tenantID string, l store.Link) error
+	createCalls         int
 	tryIncrementClickFn func(ctx context.Context, tenantID, code, ua, referer, country string) (bool, error)
 	tryIncrementCalls   int
 }
 
-func (m *mockStore) CreateLink(ctx context.Context, tenantID string, l store.Link) error { return nil }
+func (m *mockStore) CreateLink(ctx context.Context, tenantID string, l store.Link) error {
+	m.createCalls++
+	if m.createFn != nil { return m.createFn(ctx, tenantID, l) }
+	return nil
+}
 func (m *mockStore) GetLink(ctx context.Context, tenantID, code string) (store.Link, error) {
 	if m.getLinkFn != nil {
 		return m.getLinkFn(ctx, code)
@@ -47,7 +54,8 @@ func (m *mockStore) TryIncrementClick(ctx context.Context, tenantID, code, ua, r
 	}
 	return true, nil
 }
-func (m *mockStore) FindActiveByLongURL(ctx context.Context, tenantID, longURL string) (store.Link, error) {
+func (m *mockStore) FindActiveByLongURL(ctx context.Context, tenantID, longURL string, expiresAt *time.Time, maxClicks *int64) (store.Link, error) {
+	if m.findFn != nil { return m.findFn(ctx, tenantID, longURL, expiresAt, maxClicks) }
 	return store.Link{}, store.ErrNotFound
 }
 func (m *mockStore) ListLinksByTag(ctx context.Context, tenantID, tag string, limit int) ([]store.Link, error) {

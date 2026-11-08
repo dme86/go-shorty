@@ -71,7 +71,7 @@ type Store interface {
 	ListLinks(ctx context.Context, tenantID string, limit int) ([]Link, error)
 	IncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) error
 	TryIncrementClick(ctx context.Context, tenantID, code, ua, referer, country string) (bool, error)
-	FindActiveByLongURL(ctx context.Context, tenantID, longURL string) (Link, error)
+	FindActiveByLongURL(ctx context.Context, tenantID, longURL string, expiresAt *time.Time, maxClicks *int64) (Link, error)
 	ListLinksByTag(ctx context.Context, tenantID, tag string, limit int) ([]Link, error)
 	GetStats(ctx context.Context, tenantID, code string) (Stats, error)
 	UpdateMeta(ctx context.Context, tenantID, code string, md Meta) error
