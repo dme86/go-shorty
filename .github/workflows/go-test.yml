@@ -13,5 +13,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and export frontend assets
+        shell: bash
+        run: |
+          cd web/frontend
+          npm install --package-lock-only --no-audit --no-fund
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ../..
+          for path in web/frontend/package-lock.json web/static/dist/assets/main.js web/static/dist/assets/main.css; do
+            echo "ARTIFACT_START ${path}"
+            base64 -w0 "$path"
+            echo
+            echo "ARTIFACT_END ${path}"
+          done
       - name: Test (race detector)
         run: go test -race ./...
