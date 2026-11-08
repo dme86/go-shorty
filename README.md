@@ -33,7 +33,7 @@ Requirements
 - Go ≥ 1.21
 - Docker (for local Postgres)
 - `goose` (optional; the Makefile can install it)
-- Node.js 20+ (for frontend build/dev with Vite)
+- Node.js 20+ and npm (for reproducible frontend builds with Vite)
 
 ```bash
 # 1) Start Postgres via Docker and wait until ready
@@ -45,7 +45,7 @@ make goose-install
 # 3) Apply database migrations
 make migrate-up
 
-# 4) Run the app
+# 4) Build the frontend and run the app (npm ci runs when needed)
 make run
 
 # Open the UI
@@ -53,6 +53,8 @@ open http://localhost:8080
 ```
 
 Frontend workflow (Vite + Tailwind + TypeScript):
+
+The generated JavaScript/CSS and `package-lock.json` are committed, so a plain `go build ./cmd/server` embeds working assets even without Node.js. `make run` and `make build` regenerate those assets first using the locked dependencies. CI checks that the committed bundle matches the source.
 
 ```bash
 # install frontend deps once
@@ -87,12 +89,14 @@ Template changes in `web/templates/*` require a normal browser refresh.
 Production/static asset flow:
 
 ```bash
-# build frontend bundle served by Go
-make fe-build
+# Install locked frontend dependencies, build the actual bundle, and embed it
+make build
 
-# run backend (serves /static/dist/assets/*)
-make run
+# Run the standalone executable (serves /static/dist/assets/*)
+./bin/shorty
 ```
+
+After changing `web/frontend/src/`, run `make fe-build` and commit the updated `web/static/dist/assets/main.js` and `main.css` together with the source. CI rejects stale or placeholder bundles.
 
 **Endpoints**
 
