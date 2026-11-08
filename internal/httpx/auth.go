@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/idna"
 	"golang.org/x/oauth2"
 )
 
@@ -79,6 +80,10 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 		}
 		if subject, ok := h.validateSession(r); ok {
 			tenantID := tenantFromSubject(subject)
+			if tenantID == "" {
+				http.Error(w, "invalid tenant identity", http.StatusUnauthorized)
+				return
+			}
 			ctx := context.WithValue(r.Context(), ctxKeyAuthSubject, subject)
 			ctx = context.WithValue(ctx, ctxKeyTenantID, tenantID)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -110,41 +115,57 @@ func tenantIDFromRequest(r *http.Request) string {
 	return strings.TrimSpace(s)
 }
 
+// Tenant IDs are injective and typed: distinct DNS domains may not collapse
+// into the same tenant, and OAuth subject IDs can never impersonate domains.
+// The prefixes are intentionally incompatible with legacy dash-slug tenant IDs.
 func tenantFromSubject(subject string) string {
-	s := strings.ToLower(strings.TrimSpace(subject))
-	if s == "" {
-		return "default"
+	switch {
+	case strings.HasPrefix(subject, "email:"):
+		domain, ok := emailDomain(strings.TrimPrefix(subject, "email:"))
+		if !ok {
+			return ""
+		}
+		return "domain:" + domain
+	case strings.HasPrefix(subject, "sub:"):
+		sub := strings.TrimPrefix(subject, "sub:")
+		if sub == "" {
+			return ""
+		}
+		// OAuth subjects are case-sensitive and may contain arbitrary separators.
+		return "subject:" + base64.RawURLEncoding.EncodeToString([]byte(sub))
+	default:
+		return ""
 	}
-	if at := strings.LastIndex(s, "@"); at >= 0 && at < len(s)-1 {
-		return sanitizeTenantID(s[at+1:])
-	}
-	return sanitizeTenantID(s)
 }
 
-func sanitizeTenantID(in string) string {
-	in = strings.ToLower(strings.TrimSpace(in))
-	if in == "" {
-		return "default"
+// emailDomain normalizes IDNs to canonical ASCII and validates each DNS label.
+// Unlike replacing punctuation with '-', it preserves a.b.com vs a-b.com.
+func emailDomain(email string) (string, bool) {
+	email = strings.TrimSpace(email)
+	if strings.Count(email, "@") != 1 {
+		return "", false
 	}
-	var b strings.Builder
-	lastDash := false
-	for _, r := range in {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if ok {
-			b.WriteRune(r)
-			lastDash = false
-			continue
+	at := strings.LastIndexByte(email, '@')
+	local := email[:at]
+	domain := email[at+1:]
+	if local == "" || strings.ContainsAny(local, " \t\r\n|") || domain == "" {
+		return "", false
+	}
+	domain, err := idna.Lookup.ToASCII(strings.ToLower(domain))
+	if err != nil || len(domain) == 0 || len(domain) > 253 {
+		return "", false
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", false
 		}
-		if !lastDash {
-			b.WriteByte('-')
-			lastDash = true
+		for _, ch := range label {
+			if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-') {
+				return "", false
+			}
 		}
 	}
-	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		return "default"
-	}
-	return out
+	return domain, true
 }
 
 func (h *Handlers) AuthLogin(w http.ResponseWriter, r *http.Request) {
@@ -271,10 +292,13 @@ func (h *Handlers) verifiedSubject(user oauthUserInfo) (string, error) {
 	if user.EmailVerified == nil || !*user.EmailVerified {
 		return "", errors.New("oauth email is not verified")
 	}
+	if _, ok := emailDomain(email); !ok {
+		return "", errors.New("invalid oauth email domain")
+	}
 	if !h.emailAllowed(email) {
 		return "", errors.New("email domain not allowed")
 	}
-	return email, nil
+	return "email:" + email, nil
 }
 
 func (h *Handlers) emailAllowed(email string) bool {
@@ -282,13 +306,13 @@ func (h *Handlers) emailAllowed(email string) bool {
 	if domains == "" {
 		return true
 	}
-	at := strings.LastIndex(email, "@")
-	if at < 0 || at == len(email)-1 {
+	domain, ok := emailDomain(email)
+	if !ok {
 		return false
 	}
-	domain := strings.ToLower(strings.TrimSpace(email[at+1:]))
 	for _, d := range strings.Split(domains, ",") {
-		if strings.EqualFold(strings.TrimSpace(d), domain) {
+		allowed, err := idna.Lookup.ToASCII(strings.ToLower(strings.TrimSpace(d)))
+		if err == nil && allowed == domain {
 			return true
 		}
 	}
@@ -300,8 +324,11 @@ func (h *Handlers) cookieSecure() bool {
 }
 
 func (h *Handlers) signSession(subject string, exp time.Time) (string, error) {
+	if tenantFromSubject(subject) == "" {
+		return "", errors.New("invalid tenant identity")
+	}
 	expUnix := exp.Unix()
-	payload := "v2|" + subject + "|" + strconv.FormatInt(expUnix, 10)
+	payload := "v3|" + base64.RawURLEncoding.EncodeToString([]byte(subject)) + "|" + strconv.FormatInt(expUnix, 10)
 	mac := hmac.New(sha256.New, []byte(h.cfg.SessionSecret))
 	_, _ = mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
@@ -319,13 +346,17 @@ func (h *Handlers) validateSession(r *http.Request) (string, bool) {
 		return "", false
 	}
 	parts := strings.Split(string(decoded), "|")
-	// v1 cookies were issued without email verification, and must not be
-	// accepted after enabling the verified-identity policy.
-	if len(parts) != 4 || parts[0] != "v2" || parts[1] == "" {
+	// Pre-v3 sessions derived ambiguous tenant slugs. Reject them so no
+	// existing session can read data using an obsolete tenant mapping.
+	if len(parts) != 4 || parts[0] != "v3" || parts[1] == "" {
 		return "", false
 	}
-	subject, expRaw, gotSig := parts[1], parts[2], parts[3]
-	payload := "v2|" + subject + "|" + expRaw
+	rawSubject, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || tenantFromSubject(string(rawSubject)) == "" {
+		return "", false
+	}
+	subject, expRaw, gotSig := string(rawSubject), parts[2], parts[3]
+	payload := "v3|" + parts[1] + "|" + expRaw
 	mac := hmac.New(sha256.New, []byte(h.cfg.SessionSecret))
 	_, _ = mac.Write([]byte(payload))
 	expectSig := hex.EncodeToString(mac.Sum(nil))
