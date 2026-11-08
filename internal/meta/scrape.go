@@ -1,7 +1,11 @@
 package meta
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	neturl "net/url"
 	"strings"
@@ -11,10 +15,22 @@ import (
 	"github.com/example/shorty/internal/store"
 )
 
-// Fetch liest einfache Open-Graph-Metadaten (Titel, Beschreibung, Bild, SiteName).
+// Fetch reads public HTTP(S) metadata only. DNS is validated and pinned at
+// dial time (including on redirects), preventing access to private services.
 func Fetch(ctx context.Context, target string, timeout time.Duration) (store.Meta, error) {
-	client := &http.Client{Timeout: timeout}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	u, err := neturl.Parse(target)
+	if err != nil {
+		return store.Meta{}, err
+	}
+	if err := validateMetadataURL(u); err != nil {
+		return store.Meta{}, err
+	}
+
+	client := newMetadataClient(timeout)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return store.Meta{}, err
+	}
 	req.Header.Set("User-Agent", "ShortyMetaBot/1.0 (+https://example.com)")
 
 	resp, err := client.Do(req)
@@ -22,8 +38,25 @@ func Fetch(ctx context.Context, target string, timeout time.Duration) (store.Met
 		return store.Meta{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return store.Meta{}, fmt.Errorf("metadata fetch returned HTTP %d", resp.StatusCode)
+	}
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || (mediaType != "text/html" && mediaType != "application/xhtml+xml") {
+			return store.Meta{}, fmt.Errorf("metadata response is not HTML")
+		}
+	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	const maxHTMLBytes = 2 << 20
+	html, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLBytes+1))
+	if err != nil {
+		return store.Meta{}, err
+	}
+	if len(html) > maxHTMLBytes {
+		return store.Meta{}, fmt.Errorf("metadata HTML exceeds 2 MiB limit")
+	}
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(html))
 	if err != nil {
 		return store.Meta{}, err
 	}
