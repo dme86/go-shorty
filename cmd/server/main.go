@@ -40,6 +40,7 @@ func main() {
 		log.Fatal(err)
 	}
 	h.Mount(r)
+	defer h.Close()
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

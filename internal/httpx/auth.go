@@ -25,9 +25,10 @@ const (
 )
 
 type oauthUserInfo struct {
-	Sub   string `json:"sub"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	Sub           string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified *bool  `json:"email_verified"`
+	Name          string `json:"name"`
 }
 
 type ctxKey string
@@ -199,18 +200,10 @@ func (h *Handlers) AuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read user info", http.StatusUnauthorized)
 		return
 	}
-	if user.Email == "" && user.Sub == "" {
-		http.Error(w, "oauth user identity missing", http.StatusUnauthorized)
+	subject, err := h.verifiedSubject(user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
-	}
-	if !h.emailAllowed(user.Email) {
-		http.Error(w, "email domain not allowed", http.StatusForbidden)
-		return
-	}
-
-	subject := user.Email
-	if subject == "" {
-		subject = user.Sub
 	}
 	cookieVal, err := h.signSession(subject, time.Now().UTC().Add(12*time.Hour))
 	if err != nil {
@@ -254,10 +247,34 @@ func (h *Handlers) fetchUserInfo(ctx context.Context, tok *oauth2.Token) (oauthU
 		return oauthUserInfo{}, fmt.Errorf("userinfo status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	var u oauthUserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<10)).Decode(&u); err != nil {
 		return oauthUserInfo{}, err
 	}
 	return u, nil
+}
+
+// Never derive a domain-scoped tenant from an unverified email claim.
+// A provider without emails may use its stable OpenID subject only when
+// no email-domain allowlist is configured.
+func (h *Handlers) verifiedSubject(user oauthUserInfo) (string, error) {
+	sub := strings.TrimSpace(user.Sub)
+	if sub == "" {
+		return "", errors.New("oauth provider did not supply a subject")
+	}
+	email := strings.ToLower(strings.TrimSpace(user.Email))
+	if email == "" {
+		if strings.TrimSpace(h.cfg.OAuthAllowedDomains) != "" {
+			return "", errors.New("verified email required for domain allowlist")
+		}
+		return "sub:" + sub, nil
+	}
+	if user.EmailVerified == nil || !*user.EmailVerified {
+		return "", errors.New("oauth email is not verified")
+	}
+	if !h.emailAllowed(email) {
+		return "", errors.New("email domain not allowed")
+	}
+	return email, nil
 }
 
 func (h *Handlers) emailAllowed(email string) bool {
@@ -284,7 +301,7 @@ func (h *Handlers) cookieSecure() bool {
 
 func (h *Handlers) signSession(subject string, exp time.Time) (string, error) {
 	expUnix := exp.Unix()
-	payload := subject + "|" + strconv.FormatInt(expUnix, 10)
+	payload := "v2|" + subject + "|" + strconv.FormatInt(expUnix, 10)
 	mac := hmac.New(sha256.New, []byte(h.cfg.SessionSecret))
 	_, _ = mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
@@ -302,11 +319,13 @@ func (h *Handlers) validateSession(r *http.Request) (string, bool) {
 		return "", false
 	}
 	parts := strings.Split(string(decoded), "|")
-	if len(parts) != 3 {
+	// v1 cookies were issued without email verification, and must not be
+	// accepted after enabling the verified-identity policy.
+	if len(parts) != 4 || parts[0] != "v2" || parts[1] == "" {
 		return "", false
 	}
-	subject, expRaw, gotSig := parts[0], parts[1], parts[2]
-	payload := subject + "|" + expRaw
+	subject, expRaw, gotSig := parts[1], parts[2], parts[3]
+	payload := "v2|" + subject + "|" + expRaw
 	mac := hmac.New(sha256.New, []byte(h.cfg.SessionSecret))
 	_, _ = mac.Write([]byte(payload))
 	expectSig := hex.EncodeToString(mac.Sum(nil))

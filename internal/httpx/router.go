@@ -2,6 +2,8 @@ package httpx
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,7 +19,6 @@ import (
 	pq "github.com/lib/pq"
 
 	"github.com/example/shorty/internal/config"
-	"github.com/example/shorty/internal/meta"
 	"github.com/example/shorty/internal/shortid"
 	"github.com/example/shorty/internal/store"
 	"github.com/skip2/go-qrcode"
@@ -48,6 +49,7 @@ type Handlers struct {
 	tplIndex   *template.Template
 	tplPreview *template.Template
 	staticFS   http.FileSystem
+	metadataQ  *metadataQueue
 }
 
 func NewHandlers(cfg config.Config, st store.Store, efs fs.FS) (*Handlers, error) {
@@ -76,6 +78,8 @@ func NewHandlers(cfg config.Config, st store.Store, efs fs.FS) (*Handlers, error
 		tplPreview: prev,
 		staticFS:   http.FS(static),
 	}
+
+	h.metadataQ = newMetadataQueue(cfg.MetadataWorkers, cfg.MetadataQueueSize, metadataProcessor(st))
 
 	// ---- Prometheus GaugeFuncs (werden bei jedem Scrape berechnet) ----
 	// Helper: kapselt Zähl-Queries mit Timeout + Fehlersignal
@@ -125,10 +129,11 @@ func NewHandlers(cfg config.Config, st store.Store, efs fs.FS) (*Handlers, error
 
 func (h *Handlers) Mount(r *chi.Mux) {
 	apiLimiter := newIPRateLimiter(h.cfg.RateLimitRPS, h.cfg.RateLimitBurst, h.cfg.TrustProxyHeaders)
+	publicLimiter := newIPRateLimiter(h.cfg.PublicRateLimitRPS, h.cfg.PublicRateLimitBurst, h.cfg.TrustProxyHeaders)
 
-	// Health & Metrics
+	// Health is public; global tenant metrics require an explicit bearer token.
 	r.Get("/healthz", h.Healthz)
-	r.Handle("/metrics", promhttp.Handler())
+	r.Handle("/metrics", h.ProtectMetrics(promhttp.Handler()))
 
 	// Public auth + static routes
 	r.Get("/auth/login", h.AuthLogin)
@@ -150,9 +155,46 @@ func (h *Handlers) Mount(r *chi.Mux) {
 		})
 	})
 
-	// Public resolve/preview routes
-	r.Get("/preview/{code}", h.Preview)
-	r.Get("/{code}", h.Resolve)
+	// The public routes use their own per-IP budget, separate from API users.
+	r.Group(func(pub chi.Router) {
+		pub.Use(publicLimiter.Middleware)
+		pub.Get("/preview/{code}", h.Preview)
+		pub.Get("/{code}", h.Resolve)
+	})
+}
+
+// Close cancels outstanding metadata fetches and stops the bounded worker pool.
+func (h *Handlers) Close() {
+	if h.metadataQ != nil {
+		h.metadataQ.Close()
+	}
+}
+
+// The metrics token must be explicitly configured; absent configuration
+// disables the endpoint rather than leaking statistics for every tenant.
+func (h *Handlers) ProtectMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if h.cfg.MetricsToken == "" {
+			http.NotFound(w, r)
+			return
+		}
+		const prefix = "Bearer "
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, prefix) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "metrics authentication required", http.StatusUnauthorized)
+			return
+		}
+		got := sha256.Sum256([]byte(strings.TrimPrefix(auth, prefix)))
+		want := sha256.Sum256([]byte(h.cfg.MetricsToken))
+		if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "metrics authentication required", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handlers) Index(w http.ResponseWriter, r *http.Request) {
@@ -172,10 +214,18 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in createIn
+	// Reject oversized JSON before it can allocate arbitrary strings.
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body exceeds 16 KiB", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "bad json", http.StatusBadRequest)
+		}
 		return
 	}
 	in.URL = strings.TrimSpace(in.URL)
@@ -268,21 +318,10 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 	// increment metric after successful creation
 	metricLinksCreated.Inc()
 
-	// fetch meta in background (and infer tags)
-	go func(ctx context.Context, tenantID, code string, linkURL string) {
-		mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-
-		md, err := meta.Fetch(mctx, linkURL, 5*time.Second)
-		if err == nil {
-			md.Tags = meta.InferTags(linkURL, md)
-			if err := h.store.UpdateMeta(context.Background(), tenantID, code, md); err != nil {
-				log.Printf("update meta failed for %s: %v", code, err)
-			}
-		} else {
-			log.Printf("meta fetch failed for %s: %v", linkURL, err)
-		}
-	}(context.Background(), tenantID, code, L.LongURL)
+	// Metadata is best-effort: queue saturation never blocks link creation.
+	if !h.metadataQ.submit(metadataJob{tenantID: tenantID, code: code, linkURL: L.LongURL}) {
+		log.Printf("metadata queue full or stopped: skipping code=%s", code)
+	}
 
 	resp := map[string]any{
 		"code":        code,
