@@ -17,6 +17,11 @@ type PG struct{ db *sql.DB }
 func New(db *sql.DB) *PG { return &PG{db: db} }
 
 func (p *PG) CreateLink(ctx context.Context, tenantID string, l store.Link) error {
+	// NULL tags would violate the NOT NULL constraint; store an empty array
+	// if callers do not supply any tags.
+	if l.Tags == nil {
+		l.Tags = []string{}
+	}
 	_, err := p.db.ExecContext(ctx, `
         INSERT INTO links (tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags)
         VALUES ($1,$2,$3,NULL,NULL,NULL,NULL, NOW(), $4, $5, $6, 0, $7, $8)`,
