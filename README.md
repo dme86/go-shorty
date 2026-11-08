@@ -119,19 +119,25 @@ Environment variables:
 -   `OAUTH_CLIENT_SECRET` – OAuth client secret
 -   `OAUTH_AUTH_URL` – provider authorize endpoint
 -   `OAUTH_TOKEN_URL` – provider token endpoint
--   `OAUTH_USERINFO_URL` – provider userinfo endpoint (must return at least `email` or `sub`)
+-   `OAUTH_USERINFO_URL` – provider userinfo endpoint (must return `sub`; when supplying `email`, it must also return `email_verified: true`)
 -   `OAUTH_REDIRECT_URL` – callback URL, e.g. `http://localhost:8080/auth/callback`
 -   `OAUTH_SCOPES` – comma-separated scopes (default `openid,profile,email`)
 -   `OAUTH_ALLOWED_DOMAINS` – optional comma-separated email domains (e.g. `example.com,example.org`)
 -   `RATE_LIMIT_RPS` – API rate limit refill rate per IP (default `5`)
 -   `RATE_LIMIT_BURST` – API burst size per IP (default `20`)
--   `TRUST_PROXY_HEADERS` – trust `X-Forwarded-For` for client IP (`true` behind trusted reverse proxy)
+-   `PUBLIC_RATE_LIMIT_RPS` / `PUBLIC_RATE_LIMIT_BURST` – per-IP limits for public redirect/preview requests (default `20` / `60`); excess requests receive HTTP 429
+-   `METRICS_TOKEN` – bearer token required for `/metrics`; empty disables the endpoint with HTTP 404
+-   `METADATA_WORKERS` / `METADATA_QUEUE_SIZE` – concurrent metadata fetches / waiting jobs (default `4` / `64`)
+-   `TRUST_PROXY_HEADERS` – trust `X-Forwarded-For` for client IP (enable **only** when requests pass through a trusted reverse proxy that overwrites incoming forwarded headers)
 
 ### OAuth protection
 
 -   UI `/` and `/api/*` are protected by OAuth login.
 -   `/api/*` additionally uses per-user rate limiting (OAuth identity), with IP fallback.
--   Public routes remain public: `/{code}`, `/preview/{code}`, `/healthz`, `/metrics`, `/static/*`.
+-   Public routes remain public: `/{code}`, `/preview/{code}`, `/healthz`, `/static/*`; redirects/previews have a separate per-IP rate limit.
+-   `/metrics` requires `Authorization: Bearer <METRICS_TOKEN>`. With no `METRICS_TOKEN`, it returns 404. Configure a Prometheus scrape secret.
+-   Creating a link is limited to 16 KiB of JSON. Metadata scraping accepts at most 2 MiB of HTML and uses a fixed-size worker pool with a bounded queue; overflow skips optional metadata, not link creation.
+-   OAuth email identities require `email_verified: true` and a stable `sub`. Providers without email can use `sub` identities only if `OAUTH_ALLOWED_DOMAINS` is unset. **Existing login sessions are invalidated by the v2 cookie format, so users must sign in again.**
 -   Login flow endpoints: `/auth/login`, `/auth/callback`, `/auth/logout`.
 
 ### Multi-tenancy
@@ -229,7 +235,12 @@ scrape_configs:
   - job_name: shorty
     static_configs:
       - targets: ['localhost:8080']
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/shorty_metrics_token
 ```
+
+The bearer-token file should contain the same value as `METRICS_TOKEN` and be mounted as a secret; do not commit the token to Git.
 
 ## Security & Scope
 

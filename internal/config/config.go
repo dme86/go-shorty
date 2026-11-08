@@ -22,6 +22,11 @@ type Config struct {
 	OAuthAllowedDomains string
 	RateLimitRPS        float64
 	RateLimitBurst      int
+	PublicRateLimitRPS  float64
+	PublicRateLimitBurst int
+	MetricsToken        string
+	MetadataWorkers     int
+	MetadataQueueSize   int
 	TrustProxyHeaders   bool
 }
 
@@ -49,6 +54,11 @@ func Load() Config {
 		OAuthAllowedDomains: getenv("OAUTH_ALLOWED_DOMAINS", ""),
 		RateLimitRPS:        getenvFloat("RATE_LIMIT_RPS", 5),
 		RateLimitBurst:      getenvInt("RATE_LIMIT_BURST", 20),
+		PublicRateLimitRPS:  getenvFloat("PUBLIC_RATE_LIMIT_RPS", 20),
+		PublicRateLimitBurst: getenvInt("PUBLIC_RATE_LIMIT_BURST", 60),
+		MetricsToken:        getenv("METRICS_TOKEN", ""),
+		MetadataWorkers:     getenvInt("METADATA_WORKERS", 4),
+		MetadataQueueSize:   getenvInt("METADATA_QUEUE_SIZE", 64),
 		TrustProxyHeaders:   getenvBool("TRUST_PROXY_HEADERS", false),
 	}
 }

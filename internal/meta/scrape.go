@@ -38,23 +38,9 @@ func Fetch(ctx context.Context, target string, timeout time.Duration) (store.Met
 		return store.Meta{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return store.Meta{}, fmt.Errorf("metadata fetch returned HTTP %d", resp.StatusCode)
-	}
-	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
-		mediaType, _, err := mime.ParseMediaType(contentType)
-		if err != nil || (mediaType != "text/html" && mediaType != "application/xhtml+xml") {
-			return store.Meta{}, fmt.Errorf("metadata response is not HTML")
-		}
-	}
-
-	const maxHTMLBytes = 2 << 20
-	html, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLBytes+1))
+	html, err := readMetadataHTML(resp)
 	if err != nil {
 		return store.Meta{}, err
-	}
-	if len(html) > maxHTMLBytes {
-		return store.Meta{}, fmt.Errorf("metadata HTML exceeds 2 MiB limit")
 	}
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(html))
 	if err != nil {
@@ -83,6 +69,32 @@ func Fetch(ctx context.Context, target string, timeout time.Duration) (store.Met
 		md.Description = get(`meta[name='description']`, "content")
 	}
 	return md, nil
+}
+
+// readMetadataHTML enforces a limit on *decompressed* bytes, not just
+// Content-Length. Return an error before parsing oversized or non-HTML bodies.
+func readMetadataHTML(resp *http.Response) ([]byte, error) {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("metadata fetch returned HTTP %d", resp.StatusCode)
+	}
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || (mediaType != "text/html" && mediaType != "application/xhtml+xml") {
+			return nil, fmt.Errorf("metadata response is not HTML")
+		}
+	}
+	const maxHTMLBytes = 2 << 20
+	if resp.ContentLength > maxHTMLBytes {
+		return nil, fmt.Errorf("metadata HTML exceeds 2 MiB limit")
+	}
+	html, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(html) > maxHTMLBytes {
+		return nil, fmt.Errorf("metadata HTML exceeds 2 MiB limit")
+	}
+	return html, nil
 }
 
 // InferTags: Host + Pfad + Query + Keywords aus Meta → Tags (max 8).

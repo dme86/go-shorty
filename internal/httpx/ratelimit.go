@@ -69,6 +69,11 @@ func (l *ipRateLimiter) allow(r *http.Request) bool {
 
 	v, ok := l.visitors[key]
 	if !ok {
+		// Reject excess unique visitors instead of letting attacker-controlled
+		// addresses exhaust memory until the next sweep.
+		if len(l.visitors) >= 100000 {
+			return false
+		}
 		l.visitors[key] = &visitor{tokens: l.burst - 1, lastSeen: now, lastFill: now}
 		return true
 	}
