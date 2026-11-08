@@ -27,6 +27,8 @@ type Config struct {
 	MetricsToken        string
 	MetadataWorkers     int
 	MetadataQueueSize   int
+	ClickRetentionDays  int
+	ClickCleanupBatch   int
 	TrustProxyHeaders   bool
 }
 
@@ -59,6 +61,8 @@ func Load() Config {
 		MetricsToken:        getenv("METRICS_TOKEN", ""),
 		MetadataWorkers:     getenvInt("METADATA_WORKERS", 4),
 		MetadataQueueSize:   getenvInt("METADATA_QUEUE_SIZE", 64),
+		ClickRetentionDays:  getenvInt("CLICK_RETENTION_DAYS", 90),
+		ClickCleanupBatch:   getenvInt("CLICK_CLEANUP_BATCH", 5000),
 		TrustProxyHeaders:   getenvBool("TRUST_PROXY_HEADERS", false),
 	}
 }

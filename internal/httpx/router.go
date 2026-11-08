@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	pq "github.com/lib/pq"
 
 	"github.com/example/shorty/internal/config"
 	"github.com/example/shorty/internal/shortid"
@@ -51,6 +50,7 @@ type Handlers struct {
 	tplPreview *template.Template
 	staticFS   http.FileSystem
 	metadataQ  *metadataQueue
+	newCode    func() (string, error)
 }
 
 func NewHandlers(cfg config.Config, st store.Store, efs fs.FS) (*Handlers, error) {
@@ -160,6 +160,7 @@ func (h *Handlers) Mount(r *chi.Mux) {
 	r.Group(func(pub chi.Router) {
 		pub.Use(publicLimiter.Middleware)
 		pub.Get("/preview/{code}", h.Preview)
+		pub.Get("/qr/{code}", h.PublicQR)
 		pub.Get("/{code}", h.Resolve)
 	})
 }
@@ -215,7 +216,6 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in createIn
-	// Reject oversized JSON before it can allocate arbitrary strings.
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
@@ -229,8 +229,6 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// Decode to EOF to ensure that trailing whitespace or extra JSON cannot
-	// bypass the body limit or introduce multiple documents.
 	var trailing json.RawMessage
 	if err := dec.Decode(&trailing); err != io.EOF {
 		var maxErr *http.MaxBytesError
@@ -241,29 +239,36 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+
 	in.URL = strings.TrimSpace(in.URL)
-	if in.URL == "" || !strings.HasPrefix(in.URL, "http") {
-		http.Error(w, "url required (http/https)", http.StatusBadRequest)
+	if err := validateLongURL(in.URL); err != nil {
+		http.Error(w, "invalid http/https URL: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if in.MaxClicks != nil && *in.MaxClicks < 1 {
+		http.Error(w, "max_clicks must be positive", http.StatusBadRequest)
+		return
+	}
+	if in.ExpiresAt != nil {
+		// PostgreSQL timestamps have microsecond precision; normalize input
+		// for consistent deduplication of repeated requests.
+		t := in.ExpiresAt.UTC().Truncate(time.Microsecond)
+		in.ExpiresAt = &t
+	}
 
-	log.Printf("API_CreateLink begin url=%s expires=%v max=%v", in.URL, in.ExpiresAt, in.MaxClicks)
-
-	// De-duplicate: if an active short link for this URL exists, return it
-	if existing, err := h.store.FindActiveByLongURL(r.Context(), tenantID, in.URL); err == nil {
-		log.Printf("API_CreateLink dedupe hit code=%s for url=%s", existing.Code, in.URL)
-		resp := map[string]any{
-			"code":        existing.Code,
-			"short_url":   strings.TrimRight(h.cfg.BaseURL, "/") + "/" + existing.Code,
-			"preview_url": strings.TrimRight(h.cfg.BaseURL, "/") + "/preview/" + existing.Code,
-			"qr_url":      strings.TrimRight(h.cfg.BaseURL, "/") + "/api/links/" + existing.Code + "/qr.png",
-		}
+	existing, err := h.store.FindActiveByLongURL(r.Context(), tenantID, in.URL, in.ExpiresAt, in.MaxClicks)
+	if err == nil {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(h.linkResponse(existing.Code))
+		return
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		log.Printf("FindActiveByLongURL failed: %v", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
-	// initial tags from URL host (quick)
+	// Initial host tags require no outbound network request.
 	initTags := []string{}
 	if u, err := http.NewRequest(http.MethodGet, in.URL, nil); err == nil {
 		host := u.URL.Hostname()
@@ -276,74 +281,70 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
-	// random code
-	code := ""
-	for i := 0; i < 10; i++ {
-		c, err := shortid.Random(7)
-		if err != nil {
-			continue
-		}
-		if _, err := h.store.GetLink(r.Context(), tenantID, c); errors.Is(err, store.ErrNotFound) {
-			code = c
-			break
-		}
-	}
-	if code == "" {
-		http.Error(w, "cannot allocate code", http.StatusInternalServerError)
-		return
-	}
-
-	L := store.Link{
-		TenantID:  tenantID,
-		Code:      code,
-		LongURL:   in.URL,
+	link := store.Link{
+		TenantID: tenantID,
+		LongURL: in.URL,
 		CreatedAt: time.Now().UTC(),
-		IsActive:  true,
-		Custom:    false,
-		Tags:      initTags,
+		IsActive: true,
+		Custom: false,
+		Tags: initTags,
 	}
 	if in.ExpiresAt != nil {
-		L.ExpiresAt = sql.NullTime{Valid: true, Time: *in.ExpiresAt}
+		link.ExpiresAt = sql.NullTime{Valid: true, Time: *in.ExpiresAt}
 	}
 	if in.MaxClicks != nil {
-		L.MaxClicks = sql.NullInt64{Valid: true, Int64: *in.MaxClicks}
+		link.MaxClicks = sql.NullInt64{Valid: true, Int64: *in.MaxClicks}
 	}
 
-	if err := h.store.CreateLink(r.Context(), tenantID, L); err != nil {
-		// explicit console log
-		var pqe *pq.Error
-		if errors.As(err, &pqe) {
-			log.Printf("CreateLink pq error: code=%s severity=%s message=%s detail=%s where=%s",
-				string(pqe.Code), pqe.Severity, pqe.Message, pqe.Detail, pqe.Where)
-		} else {
-			log.Printf("CreateLink error: %T: %v", err, err)
-		}
-
-		if errors.Is(err, store.ErrCodeTaken) {
-			http.Error(w, "code conflict", http.StatusConflict)
+	// Uniqueness is global (links.code PRIMARY KEY), not tenant scoped.
+	// Trust the atomic INSERT and retry actual conflicts, including races.
+	generate := h.newCode
+	if generate == nil {
+		generate = func() (string, error) { return shortid.Random(7) }
+	}
+	created := false
+	for attempt := 0; attempt < 10; attempt++ {
+		code, err := generate()
+		if err != nil {
+			log.Printf("short code generation failed: %v", err)
+			http.Error(w, "code generation failed", http.StatusInternalServerError)
 			return
 		}
+		link.Code = code
+		err = h.store.CreateLink(r.Context(), tenantID, link)
+		if err == nil {
+			created = true
+			break
+		}
+		if errors.Is(err, store.ErrCodeTaken) {
+			continue
+		}
+		log.Printf("CreateLink failed: %v", err)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-
-	// increment metric after successful creation
+	if !created {
+		http.Error(w, "cannot allocate unique code", http.StatusServiceUnavailable)
+		return
+	}
 	metricLinksCreated.Inc()
 
-	// Metadata is best-effort: queue saturation never blocks link creation.
-	if !h.metadataQ.submit(metadataJob{tenantID: tenantID, code: code, linkURL: L.LongURL}) {
-		log.Printf("metadata queue full or stopped: skipping code=%s", code)
-	}
-
-	resp := map[string]any{
-		"code":        code,
-		"short_url":   strings.TrimRight(h.cfg.BaseURL, "/") + "/" + code,
-		"preview_url": strings.TrimRight(h.cfg.BaseURL, "/") + "/preview/" + code,
-		"qr_url":      strings.TrimRight(h.cfg.BaseURL, "/") + "/api/links/" + code + "/qr.png",
+	// Metadata is optional: a full worker queue must not block link creation.
+	if !h.metadataQ.submit(metadataJob{tenantID: tenantID, code: link.Code, linkURL: link.LongURL}) {
+		log.Printf("metadata queue full or stopped: skipping code=%s", link.Code)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(h.linkResponse(link.Code))
+}
+
+func (h *Handlers) linkResponse(code string) map[string]string {
+	base := strings.TrimRight(h.cfg.BaseURL, "/")
+	return map[string]string{
+		"code": code,
+		"short_url": base + "/" + code,
+		"preview_url": base + "/preview/" + code,
+		"qr_url": base + "/qr/" + code,
+	}
 }
 
 func (h *Handlers) API_ListLinks(w http.ResponseWriter, r *http.Request) {
@@ -411,20 +412,42 @@ func (h *Handlers) API_QR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := chi.URLParam(r, "code")
-	_, err := h.store.GetLink(r.Context(), tenantID, code)
-	if err != nil {
+	link, err := h.store.GetLink(r.Context(), tenantID, code)
+	if err != nil || !linkUsable(link) {
 		http.NotFound(w, r)
 		return
 	}
-	url := strings.TrimRight(h.cfg.BaseURL, "/") + "/" + code
-	png, err := qrcode.Encode(url, qrcode.Medium, 256)
+	h.writeQRCode(w, code)
+}
+
+// The public QR endpoint contains only a publicly resolvable short URL;
+// protected tenant APIs and their data remain private.
+func (h *Handlers) PublicQR(w http.ResponseWriter, r *http.Request) {
+	code := chi.URLParam(r, "code")
+	link, err := h.store.GetLinkByCode(r.Context(), code)
+	if err != nil || !linkUsable(link) {
+		http.NotFound(w, r)
+		return
+	}
+	h.writeQRCode(w, code)
+}
+
+func (h *Handlers) writeQRCode(w http.ResponseWriter, code string) {
+	target := strings.TrimRight(h.cfg.BaseURL, "/") + "/" + code
+	png, err := qrcode.Encode(target, qrcode.Medium, 256)
 	if err != nil {
-		log.Printf("API_QR encode error: %v", err)
 		http.Error(w, "qr error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(png)
+}
+
+func linkUsable(link store.Link) bool {
+	return link.IsActive &&
+		(!link.ExpiresAt.Valid || time.Now().Before(link.ExpiresAt.Time)) &&
+		(!link.MaxClicks.Valid || link.ClickCount < link.MaxClicks.Int64)
 }
 
 func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
@@ -434,11 +457,7 @@ func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !L.IsActive || (L.ExpiresAt.Valid && time.Now().After(L.ExpiresAt.Time)) {
-		http.NotFound(w, r)
-		return
-	}
-	if L.MaxClicks.Valid && L.ClickCount >= L.MaxClicks.Int64 {
+	if !linkUsable(L) {
 		http.NotFound(w, r)
 		return
 	}
@@ -453,11 +472,7 @@ func (h *Handlers) Resolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !L.IsActive || (L.ExpiresAt.Valid && time.Now().After(L.ExpiresAt.Time)) {
-		http.NotFound(w, r)
-		return
-	}
-	if L.MaxClicks.Valid && L.ClickCount >= L.MaxClicks.Int64 {
+	if !linkUsable(L) {
 		http.NotFound(w, r)
 		return
 	}

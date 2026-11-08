@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/url"
 	"strings"
+	"time"
 
 	pq "github.com/lib/pq"
 
@@ -16,6 +17,11 @@ type PG struct{ db *sql.DB }
 func New(db *sql.DB) *PG { return &PG{db: db} }
 
 func (p *PG) CreateLink(ctx context.Context, tenantID string, l store.Link) error {
+	// NULL tags would violate the NOT NULL constraint; store an empty array
+	// if callers do not supply any tags.
+	if l.Tags == nil {
+		l.Tags = []string{}
+	}
 	_, err := p.db.ExecContext(ctx, `
         INSERT INTO links (tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags)
         VALUES ($1,$2,$3,NULL,NULL,NULL,NULL, NOW(), $4, $5, $6, 0, $7, $8)`,
@@ -293,19 +299,21 @@ func (p *PG) UpdateMeta(ctx context.Context, tenantID, code string, md store.Met
 	return err
 }
 
-func (p *PG) FindActiveByLongURL(ctx context.Context, tenantID, longURL string) (store.Link, error) {
+func (p *PG) FindActiveByLongURL(ctx context.Context, tenantID, longURL string, expiresAt *time.Time, maxClicks *int64) (store.Link, error) {
 	var l store.Link
 	err := p.db.QueryRowContext(ctx, `
         SELECT tenant_id, code, long_url, title, description, image_url, site_name, created_at, expires_at, is_active, max_clicks, click_count, custom, tags
         FROM links
         WHERE tenant_id = $1
           AND long_url = $2
+          AND expires_at IS NOT DISTINCT FROM $3::timestamptz
+          AND max_clicks IS NOT DISTINCT FROM $4::bigint
           AND is_active = TRUE
           AND (expires_at IS NULL OR now() < expires_at)
           AND (max_clicks IS NULL OR click_count < max_clicks)
         ORDER BY created_at DESC
         LIMIT 1
-    `, tenantID, longURL).
+    `, tenantID, longURL, expiresAt, maxClicks).
 		Scan(&l.TenantID, &l.Code, &l.LongURL, &l.Title, &l.Description, &l.ImageURL, &l.SiteName, &l.CreatedAt, &l.ExpiresAt, &l.IsActive, &l.MaxClicks, &l.ClickCount, &l.Custom, pq.Array(&l.Tags))
 	return l, err
 }

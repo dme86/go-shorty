@@ -49,6 +49,10 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Install PostgreSQL client
         run: sudo apt-get update -qq && sudo apt-get install -y postgresql-client
       - name: Verify atomic legacy link rekey with PostgreSQL
@@ -65,3 +69,7 @@ jobs:
           psql "$db" -v ON_ERROR_STOP=1 -v code=abc1234 -v legacy_tenant=a-b-com -v new_tenant=domain:a.b.com -f scripts/rekey-link.sql
           result=$(psql "$db" -tA -v ON_ERROR_STOP=1 -c "SELECT l.tenant_id || '/' || c.tenant_id FROM links l JOIN clicks c USING (code) WHERE code = 'abc1234'")
           test "$result" = "domain:a.b.com/domain:a.b.com"
+      - name: "Integration test - dedupe, collisions and bounded click history"
+        env:
+          SHORTY_TEST_DATABASE_URL: postgres://shorty:shorty@127.0.0.1:5432/shorty?sslmode=disable
+        run: go test ./internal/store/postgres -run TestPostgresDedupeCollisionAndClickRetention -count=1 -v

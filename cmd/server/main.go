@@ -34,6 +34,12 @@ func main() {
 
 	store := postgres.New(db)
 
+	// Prune raw click events on startup and hourly in bounded batches.
+	// Lifetime click_count on links is intentionally never decremented.
+	retentionCtx, cancelRetention := context.WithCancel(context.Background())
+	defer cancelRetention()
+	go postgres.RunClickRetention(retentionCtx, store, cfg.ClickRetentionDays, cfg.ClickCleanupBatch)
+
 	r := chi.NewRouter()
 	h, err := httpx.NewHandlers(cfg, store, web.FS)
 	if err != nil {

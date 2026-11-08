@@ -103,7 +103,7 @@ After changing `web/frontend/src/`, run `make fe-build` and commit the updated `
 -   UI: `GET /`
 -   Resolve: `GET /{code}` → 302 redirect to long URL (unless a bot)
 -   Preview page: `GET /preview/{code}`
--   QR: `GET /api/links/{code}/qr.png`
+-   QR: `GET /qr/{code}` (public, rate-limited, active links only); legacy tenant-scoped `GET /api/links/{code}/qr.png` remains authenticated
 -   Health: `GET /healthz`
 -   Prometheus metrics: `GET /metrics`
 
@@ -128,6 +128,7 @@ Environment variables:
 -   `PUBLIC_RATE_LIMIT_RPS` / `PUBLIC_RATE_LIMIT_BURST` – per-IP limits for public redirect/preview requests (default `20` / `60`); excess requests receive HTTP 429
 -   `METRICS_TOKEN` – bearer token required for `/metrics`; empty disables the endpoint with HTTP 404
 -   `METADATA_WORKERS` / `METADATA_QUEUE_SIZE` – concurrent metadata fetches / waiting jobs (default `4` / `64`)
+-   `CLICK_RETENTION_DAYS` / `CLICK_CLEANUP_BATCH` – how long raw click events are retained (default 90 days) and incremental cleanup batch size (default 5000, max 10000). Old events are pruned at startup and hourly.
 -   `TRUST_PROXY_HEADERS` – trust `X-Forwarded-For` for client IP (enable **only** when requests pass through a trusted reverse proxy that overwrites incoming forwarded headers)
 
 ### OAuth protection
@@ -178,11 +179,11 @@ Response:
   "code": "Ab12Cde",
   "short_url": "http://localhost:8080/Ab12Cde",
   "preview_url": "http://localhost:8080/preview/Ab12Cde",
-  "qr_url": "http://localhost:8080/api/links/Ab12Cde/qr.png"
+  "qr_url": "http://localhost:8080/qr/Ab12Cde"
 }
 ```
 
-**Deduplication:** If an **active** short link for the exact same long URL exists (not expired, not maxed), it is returned instead of creating a new code.
+**Deduplication:** An existing **active** link is returned only when the exact URL, `expires_at`, and `max_clicks` are identical (including whether optional limits are unset). A different limit produces a separate short code. Shortcode uniqueness is enforced by PostgreSQL; rare collisions are retried up to 10 times. URLs must be valid absolute HTTP(S) addresses of at most 2048 bytes.
 
 ### List links
 
@@ -204,10 +205,10 @@ User agents that look like bots (Slack/Twitter/Discord/…) get the Preview page
 ### QR
 
 ```bash
-GET /api/links/{code}/qr.png
+GET /qr/{code}
 ```
 
-Returns a 256px PNG (the UI shows an inline modal with download).
+Returns a 256px PNG (the UI shows an inline modal with download). The public `/qr/{code}` endpoint supports anonymous preview visitors for active, non-expired, non-exhausted links and shares the public request rate limit. The original authenticated API endpoint is retained for compatibility.
 
 ### Stats
 
@@ -216,10 +217,12 @@ GET /api/links/{code}/stats
 ```
 
 Returns aggregated analytics:
-- `click_count` total clicks
-- `clicks_per_day` time series (`YYYY-MM-DD`)
-- `top_referrers` top referrer hosts
-- `user_agent_mix` grouped user-agent classes (`bot`, `mobile`, `desktop`, `unknown`)
+- `click_count` lifetime clicks, never reduced by retention
+- `clicks_per_day` time series (`YYYY-MM-DD`) from retained click events
+- `top_referrers` top referrer hosts from retained click events
+- `user_agent_mix` grouped user-agent classes (`bot`, `mobile`, `desktop`, `unknown`) from retained click events
+
+**Retention:** Raw `clicks` rows older than `CLICK_RETENTION_DAYS` (default 90) are deleted in small transactions on server startup and hourly. The `links.click_count` lifetime counter and `max_clicks` enforcement remain intact. Breakdown statistics only cover the retained window; historical daily/referrer/UA breakdowns older than the configured window will be removed. Apply database migration `0006_clicks_retention.sql` before deploying.
 
 ## Observability
 
@@ -254,7 +257,7 @@ The bearer-token file should contain the same value as `METRICS_TOKEN` and be mo
 -   Per-user API rate limiting with IP fallback
 -   Tenant data isolation at API/storage level via `tenant_id`
 -   Custom aliases disabled by design
--   Tag inference is heuristic and can be extended per domain
+-   Tag inference is deterministic (host, then path/query, then metadata keywords; first 8 unique tags) and can be extended per domain
 -   Deduplication is by **exact URL** (query differences → distinct targets)
 
 ## Screenshot
