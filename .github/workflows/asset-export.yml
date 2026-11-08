@@ -1,0 +1,30 @@
+name: Temporary frontend asset export
+
+on:
+  push:
+    branches:
+      - chore/frontend-artifact-export
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build frontend
+        working-directory: web/frontend
+        run: |
+          npm install --package-lock-only --no-audit --no-fund
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Export reproducible assets for review
+        shell: bash
+        run: |
+          for path in web/frontend/package-lock.json web/static/dist/assets/main.js web/static/dist/assets/main.css; do
+            echo "ARTIFACT_START ${path}"
+            base64 -w0 "$path"
+            echo
+            echo "ARTIFACT_END ${path}"
+          done
