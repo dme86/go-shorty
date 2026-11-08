@@ -7,7 +7,7 @@ export default defineConfig({
     outDir: resolve(__dirname, "../static/dist"),
     emptyOutDir: true,
     assetsDir: "assets",
-    sourcemap: true,
+    sourcemap: false,
     rollupOptions: {
       input: resolve(__dirname, "src/main.ts"),
       output: {

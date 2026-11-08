@@ -1,4 +1,6 @@
 APP_NAME=shorty
+FRONTEND_DIR=web/frontend
+FRONTEND_STAMP=$(FRONTEND_DIR)/node_modules/.package-lock.json
 DB_URL?=postgres://shorty:shorty@localhost:5432/shorty?sslmode=disable
 
 # Postgres (Docker) Settings
@@ -13,11 +15,11 @@ PG_DB?=shorty
         db-up db-down db-stop db-logs db-psql db-wait goose-install \
         fe-install fe-dev fe-build
 
-run:
+run: fe-build
 	BASE_URL=http://localhost:8080 DATABASE_URL="$(DB_URL)" go run ./cmd/server
 
-# Format code before building
-build: fmt
+# Always rebuild embedded assets before producing a standalone Go binary.
+build: fe-build fmt
 	CGO_ENABLED=0 go build -o bin/$(APP_NAME) ./cmd/server
 
 # go fmt across the whole module
@@ -79,11 +81,15 @@ db-psql:
 goose-install:
 	go install github.com/pressly/goose/v3/cmd/goose@latest
 
+# npm ci is deterministic; the stamp avoids reinstalling on every make run.
+$(FRONTEND_STAMP): $(FRONTEND_DIR)/package.json $(FRONTEND_DIR)/package-lock.json
+	cd $(FRONTEND_DIR) && npm ci --no-audit --no-fund
+
 fe-install:
-	cd web/frontend && npm install
+	cd $(FRONTEND_DIR) && npm ci --no-audit --no-fund
 
-fe-dev:
-	cd web/frontend && npm run dev
+fe-dev: $(FRONTEND_STAMP)
+	cd $(FRONTEND_DIR) && npm run dev
 
-fe-build:
-	cd web/frontend && npm run build
+fe-build: $(FRONTEND_STAMP)
+	cd $(FRONTEND_DIR) && npm run build
