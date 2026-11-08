@@ -25,7 +25,7 @@ func TestVerifiedOAuthIdentity(t *testing.T) {
 		wantSubject string
 		wantErr bool
 	}{
-		{"verified email", "example.com", oauthUserInfo{Sub:"user-1",Email:" ALICE@Example.com ",EmailVerified:verified(true)}, "alice@example.com", false},
+		{"verified email", "example.com", oauthUserInfo{Sub:"user-1",Email:" ALICE@Example.com ",EmailVerified:verified(true)}, "email:alice@example.com", false},
 		{"unverified email", "", oauthUserInfo{Sub:"user-1",Email:"alice@example.com",EmailVerified:verified(false)}, "", true},
 		{"missing verification", "", oauthUserInfo{Sub:"user-1",Email:"alice@example.com"}, "", true},
 		{"wrong domain", "example.com", oauthUserInfo{Sub:"user-1",Email:"alice@evil.test",EmailVerified:verified(true)}, "", true},
@@ -48,11 +48,11 @@ func TestOldOAuthSessionCookiesAreRejected(t *testing.T) {
 	const secret = "correct-horse-battery-staple"
 	h := &Handlers{cfg:config.Config{SessionSecret:secret}}
 	exp := time.Now().Add(time.Hour)
-	value,err := h.signSession("alice@example.com",exp)
+	value,err := h.signSession("email:alice@example.com",exp)
 	if err != nil { t.Fatal(err) }
 	req := httptest.NewRequest(http.MethodGet,"/",nil)
 	req.AddCookie(&http.Cookie{Name:sessionCookieName,Value:value})
-	if subject,ok := h.validateSession(req); !ok || subject!="alice@example.com" {
+	if subject,ok := h.validateSession(req); !ok || subject!="email:alice@example.com" {
 		t.Fatalf("new session failed validation: %q, %v",subject,ok)
 	}
 	oldPayload := "alice@example.com|"+strconv.FormatInt(exp.Unix(),10)

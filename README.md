@@ -137,18 +137,24 @@ Environment variables:
 -   Public routes remain public: `/{code}`, `/preview/{code}`, `/healthz`, `/static/*`; redirects/previews have a separate per-IP rate limit.
 -   `/metrics` requires `Authorization: Bearer <METRICS_TOKEN>`. With no `METRICS_TOKEN`, it returns 404. Configure a Prometheus scrape secret.
 -   Creating a link is limited to 16 KiB of JSON. Metadata scraping accepts at most 2 MiB of HTML and uses a fixed-size worker pool with a bounded queue; overflow skips optional metadata, not link creation.
--   OAuth email identities require `email_verified: true` and a stable `sub`. Providers without email can use `sub` identities only if `OAUTH_ALLOWED_DOMAINS` is unset. **Existing login sessions are invalidated by the v2 cookie format, so users must sign in again.**
+-   OAuth email identities require `email_verified: true` and a stable `sub`. Providers without email can use `sub` identities only if `OAUTH_ALLOWED_DOMAINS` is unset. **Existing login sessions are invalidated by the v3 cookie format, so users must sign in again.**
 -   Login flow endpoints: `/auth/login`, `/auth/callback`, `/auth/logout`.
 
 ### Multi-tenancy
 
 -   What multi-tenant means here: multiple organizations/teams can use the same running app and database, while API-level reads/writes are isolated per tenant.
 -   API data access is tenant-scoped (`links`, `stats`, `dedupe`, `tags`, QR lookup).
--   Tenant is derived from OAuth identity:
-    -   if subject is an email, tenant = normalized email domain (e.g. `alice@acme.com` → `acme-com`)
-    -   otherwise tenant = normalized subject value
+-   **Canonical tenant IDs are injective and typed:** a verified email like `alice@a.b.com` maps to `domain:a.b.com`, but `bob@a-b.com` maps to `domain:a-b.com` (not the same tenant). Internationalized domains use their canonical IDNA ASCII form.
+    -   Verified email identities share the domain's tenant, e.g. `alice@example.com` and `bob@example.com` both use `domain:example.com`.
+    -   Email-less OAuth subjects have their own namespace, `subject:<base64url-of-opaque-sub>`, and cannot collide with email domains; subject case is preserved.
 -   Public short-code routes (`/{code}`, `/preview/{code}`) remain globally resolvable by code.
--   Migration `0004_multitenancy.sql` adds `tenant_id` to `links` and `clicks` and backfills existing rows.
+-   **Upgrade/migration:** Earlier versions stored *ambiguous* dash-slug tenant IDs. There is no safe automatic ownership inference: `a-b-com` might have been used by both `a.b.com` and `a-b.com`. Existing rows are intentionally left unchanged and remain publicly resolvable, but are not exposed through the authenticated API until an operator verifies ownership and assigns a canonical tenant.
+    1. Back up the database, deploy the new code, and apply `make migrate-up` (migration `0005_tenant_rekey.sql` enables atomic per-link updates).
+    2. Inspect each existing link's owner; if a legacy tenant was shared by different domains, manually determine the actual owner for **each link**, not just the old slug.
+    3. Rekey only verified links using `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v code=Ab12Cde -v legacy_tenant=a-b-com -v new_tenant=domain:a.b.com -f scripts/rekey-link.sql`. The script updates `links` and `clicks` together inside a transaction.
+    4. Review remaining legacy rows with `SELECT tenant_id, count(*) FROM links WHERE tenant_id NOT LIKE 'domain:%' AND tenant_id NOT LIKE 'subject:%' GROUP BY tenant_id;`. Do not automatically claim unresolved records.
+    5. All **v2 login sessions** are invalidated; users need to sign in again.
+-   The previous migration `0004_multitenancy.sql` added `tenant_id` to `links` and `clicks`.
 
 ## API Overview
 
