@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"math"
@@ -225,6 +226,18 @@ func (h *Handlers) API_CreateLink(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "request body exceeds 16 KiB", http.StatusRequestEntityTooLarge)
 		} else {
 			http.Error(w, "bad json", http.StatusBadRequest)
+		}
+		return
+	}
+	// Decode to EOF to ensure that trailing whitespace or extra JSON cannot
+	// bypass the body limit or introduce multiple documents.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body exceeds 16 KiB", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "request body must contain exactly one JSON object", http.StatusBadRequest)
 		}
 		return
 	}
